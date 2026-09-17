@@ -55,9 +55,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onNewIntent(intent: Intent?) {
+    override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        intent?.let { handleSharedIntent(it) }
+        handleSharedIntent(intent)
     }
 
     private fun handleSharedIntent(intent: Intent) {
