@@ -1,6 +1,7 @@
 package com.tts.reader.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -207,21 +208,87 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                 }
             }
 
-            // Error Display
+            // User-Friendly Error Alert Card
             uiState.errorMessage?.let { errorMsg ->
                 Surface(
-                    color = StatusError.copy(alpha = 0.15f),
-                    shape = RoundedCornerShape(8.dp),
+                    color = ObsidianSurface,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, StatusError.copy(alpha = 0.4f)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
-                    Text(
-                        text = errorMsg,
-                        color = StatusError,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(10.dp)
-                    )
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.WarningAmber,
+                                    contentDescription = null,
+                                    tint = StatusError,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .padding(top = 1.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = "Chapter Notice",
+                                        color = StatusError,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = errorMsg,
+                                        color = TextPrimary,
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = { viewModel.clearErrorMessage() },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Dismiss",
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+
+                        if (errorMsg.contains("paste", ignoreCase = true)) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = {
+                                    viewModel.clearErrorMessage()
+                                    rawTextDialogVisible = true
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
+                                shape = RoundedCornerShape(6.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.height(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.EditNote,
+                                    contentDescription = null,
+                                    tint = ObsidianBackground,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Paste Story Text", color = ObsidianBackground, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
                 }
             }
 
@@ -727,38 +794,70 @@ fun VoiceEngineCard(
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalAlignment = Alignment.Top
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.ErrorOutline,
+                                    imageVector = Icons.Default.Info,
                                     contentDescription = null,
-                                    tint = StatusError,
-                                    modifier = Modifier.size(16.dp)
+                                    tint = AmberPrimary,
+                                    modifier = Modifier.size(18.dp)
                                 )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = modelStatus.message,
-                                    color = StatusError,
-                                    fontSize = 11.sp,
-                                    modifier = Modifier.weight(1f)
-                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Voice Download Status",
+                                        color = AmberPrimary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = modelStatus.message,
+                                        color = TextSecondary,
+                                        fontSize = 11.sp,
+                                        lineHeight = 15.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "System offline voice is active and available right now with zero setup.",
+                                        color = TextMuted,
+                                        fontSize = 10.sp
+                                    )
+                                }
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = onDownloadClick,
-                                colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.fillMaxWidth()
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = null,
-                                    tint = ObsidianBackground,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Retry Download (Resumes automatically)", color = ObsidianBackground, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Button(
+                                    onClick = onDownloadClick,
+                                    colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        tint = ObsidianBackground,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Retry Download", color = ObsidianBackground, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                                OutlinedButton(
+                                    onClick = { onSelectMode(VoiceEngineMode.SYSTEM_OFFLINE) },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                                    border = BorderStroke(1.dp, TextSecondary.copy(alpha = 0.5f)),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.height(36.dp)
+                                ) {
+                                    Text("Use System Voice", fontSize = 11.sp)
+                                }
                             }
                         }
                     } else {

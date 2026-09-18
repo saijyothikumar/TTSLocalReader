@@ -111,6 +111,10 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.value = _uiState.value.copy(infoMessage = null)
     }
 
+    fun clearErrorMessage() {
+        _uiState.value = _uiState.value.copy(errorMessage = null)
+    }
+
     fun loadUrl(url: String) {
         if (url.isBlank()) return
         viewModelScope.launch(Dispatchers.IO) {
@@ -155,9 +159,21 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
                 scraped.nextChapterUrl?.let { prefetchNextChapter(it) }
             }.onFailure { error ->
+                val friendlyMessage = when {
+                    error is java.net.UnknownHostException || error is java.net.ConnectException ->
+                        "Unable to connect to the novel website. Please check your internet connection and try again."
+                    error is java.net.SocketTimeoutException ->
+                        "The website took too long to respond. Tap reload or paste chapter text directly."
+                    error.message?.contains("403", ignoreCase = true) == true || error.message?.contains("cloudflare", ignoreCase = true) == true ->
+                        "The website has bot protection active. Please copy and paste the chapter text directly using the paste icon above."
+                    error.message?.contains("No story content", ignoreCase = true) == true ->
+                        "Could not detect story paragraphs on this page. You can paste the chapter text directly using the paste icon above."
+                    else ->
+                        "Unable to load chapter from this link. You can paste the text directly using the paste icon above."
+                }
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    errorMessage = "Failed to load chapter: ${error.localizedMessage}"
+                    errorMessage = friendlyMessage
                 )
             }
         }

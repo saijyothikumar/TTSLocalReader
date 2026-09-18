@@ -202,11 +202,21 @@ class ModelManager(private val context: Context) {
                 Log.i(tag, "Kokoro neural model extracted and manifest saved!")
 
             } catch (e: Exception) {
-                Log.w(tag, "Download attempt $attempt failed: ${e.message}")
+                Log.e(tag, "Voice model download attempt $attempt failed: ${e.message}", e)
                 if (attempt >= maxAttempts) {
-                    _status.value = ModelStatus.Error(
-                        "Download failed: ${e.localizedMessage}. Tap Retry to continue download."
-                    )
+                    val friendlyMsg = when {
+                        e is java.net.UnknownHostException || e is java.net.ConnectException ->
+                            "Network connection failed. Please check your internet and tap Retry."
+                        e is java.net.SocketTimeoutException ->
+                            "Download timed out. Tap Retry to continue download."
+                        e is SecurityException ->
+                            "Voice package integrity verification failed. Tap Retry to download from official source."
+                        e.message?.contains("416") == true ->
+                            "Download already finished. Tap Retry to complete extraction."
+                        else ->
+                            "Download stopped unexpectedly. Tap Retry to resume, or use System Voice."
+                    }
+                    _status.value = ModelStatus.Error(friendlyMsg)
                 } else {
                     delay(2000L * attempt)
                 }
@@ -235,21 +245,23 @@ class ModelManager(private val context: Context) {
         }
     }
 
-    private fun validateEntryPath(destDir: File, cleanName: String, isDirectory: Boolean): File {
+    private fun validateEntryPath(destDir: File, cleanName: String, isDirectory: Boolean): File? {
         val targetFile = File(destDir, cleanName)
         val canonicalDest = destDir.canonicalPath
         val canonicalTarget = targetFile.canonicalPath
 
         // 1. Tar Slip / Zip Slip Path Traversal Protection
         if (!canonicalTarget.startsWith(canonicalDest + File.separator) && canonicalTarget != canonicalDest) {
-            throw SecurityException("Security violation: Malicious path traversal detected in archive entry: $cleanName")
+            Log.e(tag, "Security violation: Blocked path traversal attempt in archive: $cleanName")
+            throw SecurityException("Security violation: Malicious path traversal detected.")
         }
 
         // 2. Reject Disallowed Executable Extensions (.so, .dex, .apk, .sh, .exe, .jar)
         if (!isDirectory) {
             val ext = targetFile.extension.lowercase()
             if (ext in dangerousFileExtensions) {
-                throw SecurityException("Security violation: Executable code or script detected in voice package ($cleanName). Extraction aborted.")
+                Log.w(tag, "Skipping dangerous executable file in voice archive: $cleanName")
+                return null
             }
         }
 
@@ -281,12 +293,14 @@ class ModelManager(private val context: Context) {
                             val cleanName = entry.name.replace("\\", "/")
                             val targetFile = validateEntryPath(destDir, cleanName, entry.isDirectory)
 
-                            if (entry.isDirectory) {
-                                targetFile.mkdirs()
-                            } else {
-                                targetFile.parentFile?.mkdirs()
-                                FileOutputStream(targetFile).use { fos ->
-                                    tarIn.copyTo(fos)
+                            if (targetFile != null) {
+                                if (entry.isDirectory) {
+                                    targetFile.mkdirs()
+                                } else {
+                                    targetFile.parentFile?.mkdirs()
+                                    FileOutputStream(targetFile).use { fos ->
+                                        tarIn.copyTo(fos)
+                                    }
                                 }
                             }
                             entry = tarIn.nextEntry
@@ -304,12 +318,14 @@ class ModelManager(private val context: Context) {
                 val cleanName = entry.name.replace("\\", "/")
                 val targetFile = validateEntryPath(destDir, cleanName, entry.isDirectory)
 
-                if (entry.isDirectory) {
-                    targetFile.mkdirs()
-                } else {
-                    targetFile.parentFile?.mkdirs()
-                    FileOutputStream(targetFile).use { fos ->
-                        zis.copyTo(fos)
+                if (targetFile != null) {
+                    if (entry.isDirectory) {
+                        targetFile.mkdirs()
+                    } else {
+                        targetFile.parentFile?.mkdirs()
+                        FileOutputStream(targetFile).use { fos ->
+                            zis.copyTo(fos)
+                        }
                     }
                 }
                 zis.closeEntry()
