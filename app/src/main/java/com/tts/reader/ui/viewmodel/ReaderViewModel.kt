@@ -204,15 +204,23 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         val allSentences = mutableListOf<String>()
         val sentenceMap = mutableListOf<Int>()
 
+        // Prepend chapter title if present so TTS speaks it first as Sentence 0
+        val cleanChapterTitle = chapterTitle.trim()
+        val hasTitle = cleanChapterTitle.isNotBlank() && cleanChapterTitle != "No Chapter Loaded"
+        if (hasTitle) {
+            allSentences.add(cleanChapterTitle)
+            sentenceMap.add(0) // Maps to chapter header (item 0 in reading list)
+        }
+
         paragraphs.forEachIndexed { pIdx, paragraph ->
             val sentences = NovelScraper.splitIntoSentences(paragraph)
             for (s in sentences) {
                 allSentences.add(s)
-                sentenceMap.add(pIdx)
+                sentenceMap.add(if (hasTitle) pIdx + 1 else pIdx)
             }
         }
 
-        audioPipeline.loadContent(allSentences, startIndex)
+        audioPipeline.loadContent(allSentences, sentenceMap, startIndex)
 
         _uiState.value = _uiState.value.copy(
             isLoading = false,
@@ -300,23 +308,35 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         setVoiceMode(VoiceEngineMode.SYSTEM_OFFLINE)
     }
 
+    fun selectChapter(url: String) {
+        audioPipeline.stop()
+        PlaybackService.stopPlayback(getApplication())
+        loadUrl(url)
+    }
+
     fun deleteCurrentChapter() {
         val url = _uiState.value.currentUrl
+        audioPipeline.stop()
+        PlaybackService.stopPlayback(getApplication())
         if (url.isNotBlank() && !url.startsWith("local_paste")) {
             viewModelScope.launch(Dispatchers.IO) {
                 chapterDao.deleteChapter(url)
-                _uiState.value = _uiState.value.copy(
+                _uiState.value = ReaderUiState(
                     infoMessage = "Current chapter removed from local cache."
                 )
             }
         } else {
-            _uiState.value = _uiState.value.copy(
-                infoMessage = "Current content is not saved in cache."
+            _uiState.value = ReaderUiState(
+                infoMessage = "Current content cleared."
             )
         }
     }
 
     fun deleteChapter(url: String) {
+        if (url == _uiState.value.currentUrl) {
+            deleteCurrentChapter()
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             chapterDao.deleteChapter(url)
             _uiState.value = _uiState.value.copy(
@@ -327,18 +347,31 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deleteChapters(urls: List<String>) {
         if (urls.isEmpty()) return
+        val containsCurrent = urls.contains(_uiState.value.currentUrl)
+        if (containsCurrent) {
+            audioPipeline.stop()
+            PlaybackService.stopPlayback(getApplication())
+        }
         viewModelScope.launch(Dispatchers.IO) {
             chapterDao.deleteChapters(urls)
-            _uiState.value = _uiState.value.copy(
-                infoMessage = "Deleted ${urls.size} chapter(s) from cache."
-            )
+            if (containsCurrent) {
+                _uiState.value = ReaderUiState(
+                    infoMessage = "Deleted ${urls.size} chapter(s) from cache."
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    infoMessage = "Deleted ${urls.size} chapter(s) from cache."
+                )
+            }
         }
     }
 
     fun clearAllCachedChapters() {
+        audioPipeline.stop()
+        PlaybackService.stopPlayback(getApplication())
         viewModelScope.launch(Dispatchers.IO) {
             chapterDao.clearAllChapters()
-            _uiState.value = _uiState.value.copy(
+            _uiState.value = ReaderUiState(
                 infoMessage = "All cached chapters cleared from local storage."
             )
         }

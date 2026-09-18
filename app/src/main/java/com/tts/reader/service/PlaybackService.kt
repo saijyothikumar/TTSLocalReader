@@ -162,8 +162,23 @@ class PlaybackService : Service() {
 
     fun updateNotification(isPlaying: Boolean) {
         if (!isForegroundActive) return
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, buildNotification(isPlaying))
+        val notification = buildNotification(isPlaying)
+        if (isPlaying) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } else {
+            // Detach foreground lock when paused so the notification becomes swipe-dismissible
+            stopForeground(STOP_FOREGROUND_DETACH)
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.notify(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun buildNotification(isPlaying: Boolean): Notification {
@@ -188,6 +203,11 @@ class PlaybackService : Service() {
             ).build()
         }
 
+        val stopAction = NotificationCompat.Action.Builder(
+            android.R.drawable.ic_menu_close_clear_cancel, "Stop",
+            createActionPendingIntent(ACTION_STOP)
+        ).build()
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(currentChapterTitle)
             .setContentText(currentNovelTitle)
@@ -203,6 +223,7 @@ class PlaybackService : Service() {
                 android.R.drawable.ic_media_next, "Next",
                 createActionPendingIntent(ACTION_NEXT)
             )
+            .addAction(stopAction)
             .setStyle(
                 androidx.media.app.NotificationCompat.MediaStyle()
                     .setMediaSession(mediaSession?.sessionToken)
@@ -222,6 +243,8 @@ class PlaybackService : Service() {
         releaseWakeLock()
         isForegroundActive = false
         stopForeground(STOP_FOREGROUND_REMOVE)
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.cancel(NOTIFICATION_ID)
         stopSelf()
     }
 

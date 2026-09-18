@@ -32,6 +32,9 @@ class SystemTtsEngine(private val context: Context) {
 
     var onSentenceStartListener: ((Int) -> Unit)? = null
     var onSentenceDoneListener: ((Int) -> Unit)? = null
+    var onChunkStartListener: ((String) -> Unit)? = null
+    var onChunkDoneListener: ((String) -> Unit)? = null
+    var onRangeStartListener: ((utteranceId: String, start: Int, end: Int) -> Unit)? = null
     var onPlaybackCompletedListener: (() -> Unit)? = null
 
     init {
@@ -61,14 +64,26 @@ class SystemTtsEngine(private val context: Context) {
     private fun setupProgressListener() {
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
-                utteranceId?.toIntOrNull()?.let { index ->
-                    onSentenceStartListener?.invoke(index)
+                if (utteranceId != null) {
+                    onChunkStartListener?.invoke(utteranceId)
+                    utteranceId.toIntOrNull()?.let { index ->
+                        onSentenceStartListener?.invoke(index)
+                    }
                 }
             }
 
             override fun onDone(utteranceId: String?) {
-                utteranceId?.toIntOrNull()?.let { index ->
-                    onSentenceDoneListener?.invoke(index)
+                if (utteranceId != null) {
+                    onChunkDoneListener?.invoke(utteranceId)
+                    utteranceId.toIntOrNull()?.let { index ->
+                        onSentenceDoneListener?.invoke(index)
+                    }
+                }
+            }
+
+            override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+                if (utteranceId != null) {
+                    onRangeStartListener?.invoke(utteranceId, start, end)
                 }
             }
 
@@ -84,12 +99,16 @@ class SystemTtsEngine(private val context: Context) {
     }
 
     fun speakSentence(sentenceIndex: Int, text: String, queueMode: Int = TextToSpeech.QUEUE_FLUSH) {
+        speakChunk(sentenceIndex.toString(), text, queueMode)
+    }
+
+    fun speakChunk(utteranceId: String, text: String, queueMode: Int = TextToSpeech.QUEUE_FLUSH) {
         if (!isInitialized || tts == null) return
 
         val params = Bundle().apply {
             putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
         }
-        tts?.speak(text, queueMode, params, sentenceIndex.toString())
+        tts?.speak(text, queueMode, params, utteranceId)
     }
 
     fun stop() {
