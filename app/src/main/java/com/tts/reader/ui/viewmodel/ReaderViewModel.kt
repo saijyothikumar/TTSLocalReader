@@ -6,10 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.tts.reader.data.local.AppDatabase
 import com.tts.reader.data.local.ChapterEntity
 import com.tts.reader.data.scraper.NovelScraper
-import com.tts.reader.tts.AudioStreamPipeline
-import com.tts.reader.tts.KokoroTtsEngine
-import com.tts.reader.tts.ModelManager
-import com.tts.reader.tts.ModelStatus
+import com.tts.reader.tts.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,7 +15,7 @@ import kotlinx.coroutines.launch
 
 data class ReaderUiState(
     val isLoading: Boolean = false,
-    val novelTitle: String = "Neural Reader",
+    val novelTitle: String = "Universal Reader",
     val chapterTitle: String = "No Chapter Loaded",
     val currentUrl: String = "",
     val paragraphs: List<String> = emptyList(),
@@ -27,10 +24,13 @@ data class ReaderUiState(
     val activeSentenceIndex: Int = 0,
     val isPlaying: Boolean = false,
     val playbackSpeed: Float = 1.0f,
+    val voiceMode: VoiceEngineMode = VoiceEngineMode.SYSTEM_OFFLINE,
+    val isKokoroInstalled: Boolean = false,
     val nextChapterUrl: String? = null,
     val prevChapterUrl: String? = null,
     val modelStatus: ModelStatus = ModelStatus.NotDownloaded,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val infoMessage: String? = null
 )
 
 class ReaderViewModel(application: Application) : AndroidViewModel(application) {
@@ -40,8 +40,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private val scraper = NovelScraper()
 
     val modelManager = ModelManager(application)
-    val ttsEngine = KokoroTtsEngine(application, modelManager)
-    val audioPipeline = AudioStreamPipeline(ttsEngine, viewModelScope)
+    val systemTts = SystemTtsEngine(application)
+    val kokoroTts = KokoroTtsEngine(application, modelManager)
+    val audioPipeline = AudioStreamPipeline(application, systemTts, kokoroTts, viewModelScope)
 
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
@@ -49,7 +50,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     init {
         viewModelScope.launch {
             modelManager.status.collect { status ->
-                _uiState.value = _uiState.value.copy(modelStatus = status)
+                val isInstalled = status is ModelStatus.Ready
+                _uiState.value = _uiState.value.copy(
+                    modelStatus = status,
+                    isKokoroInstalled = isInstalled
+                )
             }
         }
         viewModelScope.launch {
@@ -63,6 +68,26 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 saveProgress(index)
             }
         }
+        viewModelScope.launch {
+            audioPipeline.voiceMode.collect { mode ->
+                _uiState.value = _uiState.value.copy(voiceMode = mode)
+            }
+        }
+    }
+
+    fun setVoiceMode(mode: VoiceEngineMode) {
+        if (mode == VoiceEngineMode.KOKORO_NEURAL && !modelManager.isModelReady()) {
+            _uiState.value = _uiState.value.copy(
+                infoMessage = "Kokoro neural model not yet downloaded. Using offline System Voice."
+            )
+            audioPipeline.setEngineMode(VoiceEngineMode.SYSTEM_OFFLINE)
+        } else {
+            audioPipeline.setEngineMode(mode)
+        }
+    }
+
+    fun clearInfoMessage() {
+        _uiState.value = _uiState.value.copy(infoMessage = null)
     }
 
     fun loadUrl(url: String) {
@@ -70,7 +95,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
 
-            // 1. Check offline local Room cache first
+            // 1. Check offline local Room cache
             val cached = chapterDao.getChapterByUrl(url)
             if (cached != null) {
                 applyChapter(
@@ -86,10 +111,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 return@launch
             }
 
-            // 2. Scrape directly from website
+            // 2. Fetch from web
             val result = scraper.scrape(url)
             result.onSuccess { scraped ->
-                // Cache into Room Database
                 val entity = ChapterEntity(
                     url = url,
                     novelTitle = scraped.novelTitle,
@@ -110,12 +134,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                     startIndex = 0
                 )
 
-                // Trigger background prefetch for next chapter
+                // Background prefetch for next chapter
                 scraped.nextChapterUrl?.let { prefetchNextChapter(it) }
             }.onFailure { error ->
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    errorMessage = "Failed to load novel: ${error.localizedMessage}"
+                    errorMessage = "Failed to load chapter: ${error.localizedMessage}"
                 )
             }
         }
@@ -143,7 +167,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         prevUrl: String?,
         startIndex: Int
     ) {
-        // Flatten paragraphs into sentence units while recording sentence -> paragraph index
         val allSentences = mutableListOf<String>()
         val sentenceMap = mutableListOf<Int>()
 
@@ -204,7 +227,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setSpeed(speed: Float) {
-        ttsEngine.speed = speed
+        audioPipeline.playbackSpeed = speed
         _uiState.value = _uiState.value.copy(playbackSpeed = speed)
     }
 
@@ -228,6 +251,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun deleteKokoroModel() {
+        modelManager.deleteModel()
+        audioPipeline.setEngineMode(VoiceEngineMode.SYSTEM_OFFLINE)
+    }
+
     private fun saveProgress(sentenceIndex: Int) {
         val url = _uiState.value.currentUrl
         if (url.isNotBlank() && !url.startsWith("local_paste")) {
@@ -240,6 +268,5 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         super.onCleared()
         audioPipeline.release()
-        ttsEngine.release()
     }
 }

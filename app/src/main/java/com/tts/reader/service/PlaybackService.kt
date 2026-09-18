@@ -13,12 +13,12 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.support.v4.media.session.MediaSessionCompat
-import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import com.tts.reader.MainActivity
 import com.tts.reader.tts.AudioStreamPipeline
 import com.tts.reader.tts.KokoroTtsEngine
 import com.tts.reader.tts.ModelManager
+import com.tts.reader.tts.SystemTtsEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,13 +35,15 @@ class PlaybackService : Service() {
 
     lateinit var modelManager: ModelManager
         private set
-    lateinit var ttsEngine: KokoroTtsEngine
+    lateinit var systemTts: SystemTtsEngine
+        private set
+    lateinit var kokoroTts: KokoroTtsEngine
         private set
     lateinit var audioPipeline: AudioStreamPipeline
         private set
 
-    var currentChapterTitle: String = "Novel Reader"
-    var currentNovelTitle: String = "TTS Playback"
+    var currentChapterTitle: String = "Web Novel Reader"
+    var currentNovelTitle: String = "Audio Playback"
 
     inner class LocalBinder : Binder() {
         fun getService(): PlaybackService = this@PlaybackService
@@ -54,8 +56,9 @@ class PlaybackService : Service() {
         createNotificationChannel()
 
         modelManager = ModelManager(this)
-        ttsEngine = KokoroTtsEngine(this, modelManager)
-        audioPipeline = AudioStreamPipeline(ttsEngine, serviceScope)
+        systemTts = SystemTtsEngine(this)
+        kokoroTts = KokoroTtsEngine(this, modelManager)
+        audioPipeline = AudioStreamPipeline(this, systemTts, kokoroTts, serviceScope)
     }
 
     private fun acquireWakeLock() {
@@ -65,7 +68,7 @@ class PlaybackService : Service() {
             "NeuralNovelTTS::PlaybackWakeLock"
         ).apply {
             setReferenceCounted(false)
-            acquire(60 * 60 * 1000L /* 1 hour max safety limit */)
+            acquire(2 * 60 * 60 * 1000L /* 2 hours safety limit */)
         }
     }
 
@@ -109,7 +112,7 @@ class PlaybackService : Service() {
                 "Novel Reading Playback",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Shows active playback controls for offline novel reading"
+                description = "Controls for offline background novel reading"
                 setShowBadge(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
@@ -213,7 +216,6 @@ class PlaybackService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         audioPipeline.release()
-        ttsEngine.release()
         serviceScope.cancel()
         wakeLock?.let {
             if (it.isHeld) it.release()

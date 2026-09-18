@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -19,10 +20,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tts.reader.tts.ModelStatus
+import com.tts.reader.tts.VoiceEngineMode
 import com.tts.reader.ui.theme.*
 import com.tts.reader.ui.viewmodel.ReaderViewModel
 import kotlinx.coroutines.launch
@@ -38,6 +41,7 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
     var rawTextDialogVisible by remember { mutableStateOf(false) }
     var rawInputText by remember { mutableStateOf("") }
     var rawInputTitle by remember { mutableStateOf("") }
+    var speedSheetVisible by remember { mutableStateOf(false) }
 
     // Auto-scroll reading view to keep active sentence visible
     val activeParagraphIdx = uiState.sentenceToParagraphMap.getOrNull(uiState.activeSentenceIndex) ?: 0
@@ -94,7 +98,7 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                 hasPrevChapter = !uiState.prevChapterUrl.isNullOrBlank(),
                 onPlayPause = { viewModel.togglePlayPause() },
                 onSeek = { viewModel.seekToSentence(it) },
-                onSpeedChange = { viewModel.setSpeed(it) },
+                onOpenSpeed = { speedSheetVisible = true },
                 onNextChapter = { viewModel.nextChapter() },
                 onPrevChapter = { viewModel.prevChapter() }
             )
@@ -110,17 +114,17 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                 color = ObsidianSurface,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     TextField(
                         value = inputUrl,
                         onValueChange = { inputUrl = it },
-                        placeholder = { Text("Paste Ranobes / Web Novel URL...", color = TextMuted, fontSize = 13.sp) },
+                        placeholder = { Text("Paste chapter or novel URL...", color = TextMuted, fontSize = 13.sp) },
                         colors = TextFieldDefaults.colors(
                             focusedContainerColor = Color.Transparent,
                             unfocusedContainerColor = Color.Transparent,
@@ -141,19 +145,46 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                     ) {
                         Icon(
                             imageVector = Icons.Default.CloudDownload,
-                            contentDescription = "Load Novel",
+                            contentDescription = "Load Chapter",
                             tint = AmberPrimary
                         )
                     }
                 }
             }
 
-            // Model Setup Banner (Shown if Kokoro weights need one-tap download)
-            AnimatedVisibility(visible = uiState.modelStatus !is ModelStatus.Ready) {
-                ModelSetupBanner(
-                    status = uiState.modelStatus,
-                    onDownloadClick = { viewModel.downloadKokoroModel() }
-                )
+            // Voice Engine Status & Download Banner
+            VoiceModeStatusHeader(
+                voiceMode = uiState.voiceMode,
+                modelStatus = uiState.modelStatus,
+                onDownloadClick = { viewModel.downloadKokoroModel() },
+                onSwitchToSystem = { viewModel.setVoiceMode(VoiceEngineMode.SYSTEM_OFFLINE) },
+                onSwitchToNeural = { viewModel.setVoiceMode(VoiceEngineMode.KOKORO_NEURAL) }
+            )
+
+            // Informational Notification Banner
+            uiState.infoMessage?.let { info ->
+                Surface(
+                    color = AmberGlow,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = info,
+                            color = TextPrimary,
+                            fontSize = 12.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { viewModel.clearInfoMessage() }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = AmberPrimary, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
             }
 
             // Error Display
@@ -163,18 +194,18 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(12.dp)
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
                 ) {
                     Text(
                         text = errorMsg,
                         color = StatusError,
                         fontSize = 12.sp,
-                        modifier = Modifier.padding(12.dp)
+                        modifier = Modifier.padding(10.dp)
                     )
                 }
             }
 
-            // Reading Content Viewport
+            // Reading Viewport
             if (uiState.isLoading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = AmberPrimary)
@@ -187,7 +218,7 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = 16.dp),
-                    contentPadding = PaddingValues(vertical = 16.dp)
+                    contentPadding = PaddingValues(vertical = 12.dp)
                 ) {
                     itemsIndexed(uiState.paragraphs) { pIdx, paragraphText ->
                         val isParagraphActive = pIdx == activeParagraphIdx
@@ -201,11 +232,20 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                                 }
                             }
                         )
-                        Spacer(modifier = Modifier.height(14.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                     }
                 }
             }
         }
+    }
+
+    // Clustered Speed Selector Sheet
+    if (speedSheetVisible) {
+        SpeedSelectionSheet(
+            currentSpeed = uiState.playbackSpeed,
+            onSpeedSelected = { viewModel.setSpeed(it) },
+            onDismiss = { speedSheetVisible = false }
+        )
     }
 
     // Direct Text Paste Dialog
@@ -213,7 +253,7 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
         AlertDialog(
             onDismissRequest = { rawTextDialogVisible = false },
             containerColor = ObsidianSurface,
-            title = { Text("Paste Chapter Content", color = TextPrimary) },
+            title = { Text("Paste Story Content", color = TextPrimary) },
             text = {
                 Column {
                     OutlinedTextField(
@@ -227,7 +267,7 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                         ),
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
                     OutlinedTextField(
                         value = rawInputText,
                         onValueChange = { rawInputText = it },
@@ -239,7 +279,7 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(200.dp)
+                            .height(180.dp)
                     )
                 }
             },
@@ -266,6 +306,114 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
 }
 
 @Composable
+fun VoiceModeStatusHeader(
+    voiceMode: VoiceEngineMode,
+    modelStatus: ModelStatus,
+    onDownloadClick: () -> Unit,
+    onSwitchToSystem: () -> Unit,
+    onSwitchToNeural: () -> Unit
+) {
+    Surface(
+        color = ObsidianSurface,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                // Voice Switcher Pills
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(ObsidianSurfaceVariant)
+                        .padding(3.dp)
+                ) {
+                    Surface(
+                        color = if (voiceMode == VoiceEngineMode.SYSTEM_OFFLINE) AmberPrimary else Color.Transparent,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.clickable { onSwitchToSystem() }
+                    ) {
+                        Text(
+                            text = "🔊 System Voice (Offline)",
+                            color = if (voiceMode == VoiceEngineMode.SYSTEM_OFFLINE) ObsidianBackground else TextSecondary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+
+                    Surface(
+                        color = if (voiceMode == VoiceEngineMode.KOKORO_NEURAL) AmberPrimary else Color.Transparent,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.clickable { onSwitchToNeural() }
+                    ) {
+                        Text(
+                            text = "✨ Kokoro AI Voice",
+                            color = if (voiceMode == VoiceEngineMode.KOKORO_NEURAL) ObsidianBackground else TextSecondary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                }
+            }
+
+            // If Kokoro is active or requested but not downloaded, show download / progress helper
+            if (voiceMode == VoiceEngineMode.KOKORO_NEURAL && modelStatus !is ModelStatus.Ready) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Kokoro Voice (~85MB) not installed",
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 12.sp
+                        )
+                        Text(
+                            text = "Resumable download for studio-quality offline speech",
+                            color = TextSecondary,
+                            fontSize = 10.sp
+                        )
+                    }
+                    Button(
+                        onClick = onDownloadClick,
+                        colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Download", color = ObsidianBackground, fontSize = 11.sp)
+                    }
+                }
+
+                if (modelStatus is ModelStatus.Downloading) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    LinearProgressIndicator(
+                        progress = { modelStatus.progressPercent / 100f },
+                        color = AmberPrimary,
+                        trackColor = ObsidianSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "${modelStatus.currentItem} (${modelStatus.progressPercent}%)",
+                        color = TextMuted,
+                        fontSize = 10.sp,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun ParagraphCard(
     text: String,
     isActive: Boolean,
@@ -287,8 +435,8 @@ fun ParagraphCard(
         Text(
             text = text,
             style = MaterialTheme.typography.bodyLarge.copy(
-                fontSize = 17.sp,
-                lineHeight = 26.sp,
+                fontSize = 16.sp,
+                lineHeight = 25.sp,
                 color = if (isActive) TextPrimary else TextSecondary,
                 fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal
             )
@@ -306,7 +454,7 @@ fun PlaybackControlBar(
     hasPrevChapter: Boolean,
     onPlayPause: () -> Unit,
     onSeek: (Int) -> Unit,
-    onSpeedChange: (Float) -> Unit,
+    onOpenSpeed: () -> Unit,
     onNextChapter: () -> Unit,
     onPrevChapter: () -> Unit
 ) {
@@ -318,9 +466,9 @@ fun PlaybackControlBar(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp)
         ) {
-            // Sentence Scrubber Slider
+            // Sentence Progress Scrubber
             if (totalSentences > 0) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -329,7 +477,7 @@ fun PlaybackControlBar(
                     Text(
                         text = "${activeSentence + 1}/$totalSentences",
                         color = TextMuted,
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         modifier = Modifier.width(55.dp)
                     )
                     Slider(
@@ -346,12 +494,38 @@ fun PlaybackControlBar(
                 }
             }
 
-            // Media Buttons Row
+            // Controls Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Clustered Speed Button Badge
+                Surface(
+                    color = ObsidianSurfaceVariant,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.clickable { onOpenSpeed() }
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Speed,
+                            contentDescription = "Playback Speed",
+                            tint = AmberPrimary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "${playbackSpeed}x",
+                            color = TextPrimary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
                 // Prev Chapter
                 IconButton(onClick = onPrevChapter, enabled = hasPrevChapter) {
                     Icon(
@@ -361,7 +535,7 @@ fun PlaybackControlBar(
                     )
                 }
 
-                // Skip Backward 5 sentences
+                // Rewind 5 Sentences
                 IconButton(onClick = { onSeek((activeSentence - 5).coerceAtLeast(0)) }) {
                     Icon(
                         imageVector = Icons.Default.Replay,
@@ -373,7 +547,7 @@ fun PlaybackControlBar(
                 // Play / Pause Floating Orb
                 Box(
                     modifier = Modifier
-                        .size(56.dp)
+                        .size(54.dp)
                         .clip(CircleShape)
                         .background(AmberPrimary)
                         .clickable { onPlayPause() },
@@ -383,11 +557,11 @@ fun PlaybackControlBar(
                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = if (isPlaying) "Pause" else "Play",
                         tint = ObsidianBackground,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(30.dp)
                     )
                 }
 
-                // Skip Forward 5 sentences
+                // Forward 5 Sentences
                 IconButton(onClick = { onSeek((activeSentence + 5).coerceAtMost(totalSentences - 1)) }) {
                     Icon(
                         imageVector = Icons.Default.Forward10,
@@ -405,101 +579,127 @@ fun PlaybackControlBar(
                     )
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SpeedSelectionSheet(
+    currentSpeed: Float,
+    onSpeedSelected: (Float) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var sliderValue by remember { mutableStateOf(currentSpeed) }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = ObsidianSurface,
+        dragHandle = { BottomSheetDefaults.DragHandle(color = AmberPrimary) }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Playback Speed: ${String.format("%.2f", sliderValue)}x",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = TextPrimary
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Preset Chips Grid
+            val presets = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                presets.take(4).forEach { speed ->
+                    SpeedChip(
+                        speed = speed,
+                        isSelected = Math.abs(currentSpeed - speed) < 0.01f,
+                        onClick = {
+                            sliderValue = speed
+                            onSpeedSelected(speed)
+                        }
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Speed Selector Pills
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
+                horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
-                    val isSelected = playbackSpeed == speed
-                    Surface(
-                        color = if (isSelected) AmberPrimary else ObsidianSurfaceVariant,
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier
-                            .padding(horizontal = 4.dp)
-                            .clickable { onSpeedChange(speed) }
-                    ) {
-                        Text(
-                            text = "${speed}x",
-                            color = if (isSelected) ObsidianBackground else TextSecondary,
-                            fontSize = 12.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                        )
-                    }
+                presets.drop(4).forEach { speed ->
+                    SpeedChip(
+                        speed = speed,
+                        isSelected = Math.abs(currentSpeed - speed) < 0.01f,
+                        onClick = {
+                            sliderValue = speed
+                            onSpeedSelected(speed)
+                        }
+                    )
                 }
             }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Fine-Tuning Slider
+            Slider(
+                value = sliderValue,
+                onValueChange = {
+                    sliderValue = it
+                    onSpeedSelected((Math.round(it * 20) / 20f)) // snap to 0.05 steps
+                },
+                valueRange = 0.5f..3.0f,
+                colors = SliderDefaults.colors(
+                    thumbColor = AmberPrimary,
+                    activeTrackColor = AmberPrimary,
+                    inactiveTrackColor = ObsidianSurfaceVariant
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Done", color = ObsidianBackground, fontWeight = FontWeight.Bold)
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
 
 @Composable
-fun ModelSetupBanner(
-    status: ModelStatus,
-    onDownloadClick: () -> Unit
+fun SpeedChip(
+    speed: Float,
+    isSelected: Boolean,
+    onClick: () -> Unit
 ) {
     Surface(
-        color = AmberGlow,
-        shape = RoundedCornerShape(10.dp),
+        color = if (isSelected) AmberPrimary else ObsidianSurfaceVariant,
+        shape = RoundedCornerShape(12.dp),
         modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .border(1.dp, AmberPrimary.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+            .clickable { onClick() }
+            .padding(2.dp)
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.GraphicEq,
-                    contentDescription = null,
-                    tint = AmberPrimary,
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Kokoro Neural Voice (~85MB)",
-                        color = TextPrimary,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
-                    )
-                    Text(
-                        text = "Studio-quality natural voice for offline reading",
-                        color = TextSecondary,
-                        fontSize = 11.sp
-                    )
-                }
-                if (status is ModelStatus.NotDownloaded || status is ModelStatus.Error) {
-                    Button(
-                        onClick = onDownloadClick,
-                        colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Download", color = ObsidianBackground, fontSize = 12.sp)
-                    }
-                }
-            }
-
-            if (status is ModelStatus.Downloading) {
-                Spacer(modifier = Modifier.height(8.dp))
-                LinearProgressIndicator(
-                    progress = { status.progressPercent / 100f },
-                    color = AmberPrimary,
-                    trackColor = ObsidianSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Text(
-                    text = "${status.currentItem} (${status.progressPercent}%)",
-                    color = TextMuted,
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-            }
-        }
+        Text(
+            text = "${speed}x",
+            color = if (isSelected) ObsidianBackground else TextSecondary,
+            fontSize = 12.sp,
+            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+        )
     }
 }
 
@@ -513,30 +713,30 @@ fun EmptyStateView(onPasteTextClick: () -> Unit) {
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(
-                imageVector = Icons.Default.MenuBook,
+                imageVector = Icons.AutoMirrored.Filled.MenuBook,
                 contentDescription = null,
                 tint = AmberPrimary.copy(alpha = 0.6f),
                 modifier = Modifier.size(64.dp)
             )
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = "No Novel Chapter Loaded",
+                text = "No Chapter Loaded",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                 color = TextPrimary
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Paste a Ranobes chapter link in the search bar above or paste text directly to start listening.",
+                text = "Paste any web novel chapter link in the bar above or paste text directly to start listening.",
                 color = TextSecondary,
                 fontSize = 13.sp,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                textAlign = TextAlign.Center
             )
             Spacer(modifier = Modifier.height(20.dp))
             OutlinedButton(
                 onClick = onPasteTextClick,
                 border = androidx.compose.foundation.BorderStroke(1.dp, AmberPrimary)
             ) {
-                Text("Paste Raw Text", color = AmberPrimary)
+                Text("Paste Story Text", color = AmberPrimary)
             }
         }
     }

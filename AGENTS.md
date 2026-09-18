@@ -10,10 +10,12 @@ A lightweight, offline-first Text-to-Speech (TTS) application targeting Android 
 
 ## Locked Architectural Decisions
 - **Framework**: Native Android (Kotlin + Jetpack Compose)
-- **TTS Engine & Model Distribution**: Kokoro-82M ONNX via `sherpa-onnx` (~85MB model, ~200MB total runtime), running fully offline on Android 9+ (API 28+). Initial app APK is lightweight (~25MB) with a resilient one-tap first-run downloader for offline Kokoro model weights with SHA-256 verification.
-- **Audio Pipeline**: Sentence-level lookahead buffer (2 sentences ahead) feeding continuous PCM audio into Android `AudioTrack`, eliminating all inter-paragraph gaps and providing millisecond-accurate synchronized UI text highlighting.
+- **Hybrid TTS Engine**:
+  1. *System TTS (Default / Instant)*: Built-in Android `TextToSpeech` requiring **0 MB download**, functioning 100% offline immediately on first launch with zero setup.
+  2. *Kokoro-82M Neural Voice (Optional)*: High-fidelity studio-quality AI voice with a resumable (HTTP `Range`), auto-retrying chunked downloader that persists state across app restarts via local manifest.
+- **Audio Pipeline**: Continuous lookahead sentence queue ensuring zero audible gap between paragraphs and millisecond-accurate synchronized UI text highlighting.
 - **Background Architecture**: Android Foreground Service + `MediaSessionCompat` with lock-screen notification and partial wake-locks.
-- **Content Extractor & Storage**: Custom HTML novel extractor (specialized for Ranobes, RoyalRoad, etc., stripping comments and navigation) with Local Room DB caching and automatic "Next Chapter" link pre-fetching.
+- **Content Extractor & Storage**: Universal Web Novel Extractor (supporting Ranobes, RoyalRoad, NovelFull, ScribbleHub, etc., with universal comment & ad stripping) with Local Room DB caching and automatic "Next Chapter" link pre-fetching.
 
 ## Locked UI Theme (Obsidian Amber)
 - **Background**: `#121214` (Deep Charcoal)

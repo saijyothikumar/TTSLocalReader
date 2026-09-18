@@ -20,23 +20,23 @@ class NovelScraperTest {
     }
 
     @Test
-    fun testRanobesHtmlSanitization() {
+    fun testUniversalHtmlSanitization() {
         val sampleHtml = """
             <html>
-            <head><title>Martial God - Chapter 45 - Ranobes</title></head>
+            <head><title>Immortal Journey - Chapter 120</title></head>
             <body>
                 <header class="header">Site Navigation Header</header>
-                <div class="breadcrumb"><a href="#">Martial God</a></div>
-                <h1 class="title">Chapter 45 - The Dragon Gate</h1>
-                <div id="arrticle">
+                <div class="breadcrumb"><a href="#">Immortal Journey</a></div>
+                <h1 class="title">Chapter 120 - Gathering Clouds</h1>
+                <div class="chapter-content">
                     <p>The dawn broke over the misty valley.</p>
                     <p>Lin Feng stood at the peak of the mountain.</p>
                 </div>
                 <div class="navigation">
-                    <a href="/chapter-44">Prev</a>
-                    <a href="/chapter-46" rel="next">Next Chapter</a>
+                    <a href="/chapter-119">Prev</a>
+                    <a href="/chapter-121" rel="next">Next Chapter</a>
                 </div>
-                <div id="dle-comments-list">
+                <div id="comments" class="comments-tree">
                     <div class="comment">User1: Great chapter!</div>
                     <div class="comment">User2: Update soon please!</div>
                 </div>
@@ -44,20 +44,29 @@ class NovelScraperTest {
             </html>
         """.trimIndent()
 
-        val doc = Jsoup.parse(sampleHtml, "https://ranobes.top/novels/123/c45.html")
+        val doc = Jsoup.parse(sampleHtml, "https://example-novels.com/c120.html")
         
-        // Emulate scraper cleaning steps
         val unwantedSelectors = listOf(
-            "#dle-comments-list", ".comments", ".navigation", ".header"
+            "#dle-comments-list", "#comments", ".comments", ".comments-tree", ".navigation", ".header"
         )
         for (sel in unwantedSelectors) {
             doc.select(sel).remove()
         }
 
-        val content = doc.selectFirst("#arrticle")?.text() ?: ""
+        val content = doc.selectFirst(".chapter-content")?.text() ?: ""
         assertTrue(content.contains("The dawn broke over the misty valley."))
         assertTrue(content.contains("Lin Feng stood at the peak of the mountain."))
         assertFalse(content.contains("User1: Great chapter!"))
         assertFalse(content.contains("Site Navigation Header"))
+    }
+
+    @Test
+    fun testRawTextParsing() {
+        val scraper = NovelScraper()
+        val raw = "Paragraph 1 line.\n\nParagraph 2 line with more words."
+        val chapter = scraper.parseRawText("My Draft", raw)
+        assertEquals("My Draft", chapter.chapterTitle)
+        assertEquals(2, chapter.paragraphs.size)
+        assertEquals("Paragraph 1 line.", chapter.paragraphs[0])
     }
 }

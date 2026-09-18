@@ -1,9 +1,11 @@
 package com.tts.reader.tts
 
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.speech.tts.TextToSpeech
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -14,8 +16,15 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
+enum class VoiceEngineMode {
+    SYSTEM_OFFLINE, // Instant offline built-in Android voice (0 MB download required)
+    KOKORO_NEURAL   // Studio-quality Kokoro AI voice
+}
+
 class AudioStreamPipeline(
-    private val ttsEngine: KokoroTtsEngine,
+    private val context: Context,
+    val systemTts: SystemTtsEngine,
+    val kokoroTts: KokoroTtsEngine,
     private val scope: CoroutineScope
 ) {
     private val tag = "AudioStreamPipeline"
@@ -23,7 +32,7 @@ class AudioStreamPipeline(
     private var audioTrack: AudioTrack? = null
 
     private var sentences: List<String> = emptyList()
-    private var currentPlayingIndex = 0
+    private var currentSentenceIndex = 0
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
@@ -31,19 +40,50 @@ class AudioStreamPipeline(
     private val _activeSentenceIndex = MutableStateFlow(0)
     val activeSentenceIndex: StateFlow<Int> = _activeSentenceIndex
 
-    // Map of sentenceIndex -> AudioChunk
-    private val chunkCache = ConcurrentHashMap<Int, AudioChunk>()
+    private val _voiceMode = MutableStateFlow(VoiceEngineMode.SYSTEM_OFFLINE)
+    val voiceMode: StateFlow<VoiceEngineMode> = _voiceMode
 
-    private var playbackJob: Job? = null
-    private var lookaheadJob: Job? = null
-    private var positionTrackerJob: Job? = null
+    var playbackSpeed: Float = 1.0f
+        set(value) {
+            field = value
+            systemTts.speed = value
+            kokoroTts.speed = value
+        }
 
-    // Track frame intervals for sample-accurate highlighting
-    private val sentenceFrameRanges = mutableListOf<Pair<Long, Int>>() // Pair<EndFrame, SentenceIndex>
+    // Cache for Neural ONNX PCM chunks
+    private val neuralChunkCache = ConcurrentHashMap<Int, AudioChunk>()
+
+    private var neuralPlaybackJob: Job? = null
+    private var neuralLookaheadJob: Job? = null
+    private var neuralPositionJob: Job? = null
+    private val sentenceFrameRanges = mutableListOf<Pair<Long, Int>>()
     private var totalFramesWritten = 0L
 
     init {
+        setupSystemTtsListeners()
         initAudioTrack()
+    }
+
+    private fun setupSystemTtsListeners() {
+        systemTts.onSentenceStartListener = { index ->
+            if (_voiceMode.value == VoiceEngineMode.SYSTEM_OFFLINE) {
+                _activeSentenceIndex.value = index
+                currentSentenceIndex = index
+            }
+        }
+
+        systemTts.onSentenceDoneListener = { index ->
+            if (_voiceMode.value == VoiceEngineMode.SYSTEM_OFFLINE) {
+                val next = index + 1
+                if (next < sentences.size) {
+                    if (_isPlaying.value) {
+                        systemTts.speakSentence(next, sentences[next], TextToSpeech.QUEUE_ADD)
+                    }
+                } else {
+                    _isPlaying.value = false
+                }
+            }
+        }
     }
 
     private fun initAudioTrack() {
@@ -69,12 +109,21 @@ class AudioStreamPipeline(
         )
     }
 
+    fun setEngineMode(mode: VoiceEngineMode) {
+        val wasPlaying = _isPlaying.value
+        pause()
+        _voiceMode.value = mode
+        if (wasPlaying) {
+            play()
+        }
+    }
+
     fun loadContent(sentenceList: List<String>, startIndex: Int = 0) {
         stop()
         sentences = sentenceList
-        currentPlayingIndex = startIndex.coerceIn(0, (sentenceList.size - 1).coerceAtLeast(0))
-        _activeSentenceIndex.value = currentPlayingIndex
-        chunkCache.clear()
+        currentSentenceIndex = startIndex.coerceIn(0, (sentenceList.size - 1).coerceAtLeast(0))
+        _activeSentenceIndex.value = currentSentenceIndex
+        neuralChunkCache.clear()
         sentenceFrameRanges.clear()
         totalFramesWritten = 0L
     }
@@ -84,23 +133,51 @@ class AudioStreamPipeline(
         if (_isPlaying.value) return
 
         _isPlaying.value = true
-        audioTrack?.play()
 
-        startLookaheadWorker()
-        startStreamingPlaybackWorker()
-        startPositionTracker()
+        // Check if user requested Kokoro Neural and it is genuinely available
+        if (_voiceMode.value == VoiceEngineMode.KOKORO_NEURAL && kokoroTts.isAvailable()) {
+            playWithKokoroNeural()
+        } else {
+            // Default instant offline system playback (works out of the box with zero setup)
+            playWithSystemTts()
+        }
+    }
+
+    private fun playWithSystemTts() {
+        systemTts.speed = playbackSpeed
+        val startIdx = currentSentenceIndex.coerceIn(0, sentences.size - 1)
+        systemTts.speakSentence(startIdx, sentences[startIdx], TextToSpeech.QUEUE_FLUSH)
+
+        // Queue lookahead sentence immediately for gapless playback
+        val nextIdx = startIdx + 1
+        if (nextIdx < sentences.size) {
+            systemTts.speakSentence(nextIdx, sentences[nextIdx], TextToSpeech.QUEUE_ADD)
+        }
+    }
+
+    private fun playWithKokoroNeural() {
+        val track = audioTrack ?: return
+        track.play()
+
+        startNeuralLookaheadWorker()
+        startNeuralStreamingWorker()
+        startNeuralPositionTracker()
     }
 
     fun pause() {
         _isPlaying.value = false
+        systemTts.stop()
+
         audioTrack?.pause()
-        playbackJob?.cancel()
-        lookaheadJob?.cancel()
-        positionTrackerJob?.cancel()
+        neuralPlaybackJob?.cancel()
+        neuralLookaheadJob?.cancel()
+        neuralPositionJob?.cancel()
     }
 
     fun stop() {
         pause()
+        systemTts.stop()
+
         audioTrack?.stop()
         audioTrack?.flush()
         sentenceFrameRanges.clear()
@@ -108,84 +185,93 @@ class AudioStreamPipeline(
     }
 
     fun seekToSentence(index: Int) {
-        val targetIndex = index.coerceIn(0, sentences.size - 1)
+        if (sentences.isEmpty()) return
+        val target = index.coerceIn(0, sentences.size - 1)
         val wasPlaying = _isPlaying.value
+
         stop()
-        currentPlayingIndex = targetIndex
-        _activeSentenceIndex.value = targetIndex
+        currentSentenceIndex = target
+        _activeSentenceIndex.value = target
+
         if (wasPlaying) {
             play()
         }
     }
 
-    private fun startLookaheadWorker() {
-        lookaheadJob?.cancel()
-        lookaheadJob = scope.launch(Dispatchers.Default) {
+    private fun startNeuralLookaheadWorker() {
+        neuralLookaheadJob?.cancel()
+        neuralLookaheadJob = scope.launch(Dispatchers.Default) {
             while (isActive && _isPlaying.value) {
-                // Ensure the next 3 sentences are pre-rendered into the cache
                 for (offset in 0..2) {
-                    val idx = currentPlayingIndex + offset
-                    if (idx < sentences.size && !chunkCache.containsKey(idx)) {
-                        val text = sentences[idx]
-                        val chunk = ttsEngine.synthesizeSentence(idx, text)
-                        chunkCache[idx] = chunk
+                    val idx = currentSentenceIndex + offset
+                    if (idx < sentences.size && !neuralChunkCache.containsKey(idx)) {
+                        kokoroTts.synthesizeSentence(idx, sentences[idx])?.let { chunk ->
+                            neuralChunkCache[idx] = chunk
+                        }
                     }
                 }
-                kotlinx.coroutines.delay(100)
+                kotlinx.coroutines.delay(120)
             }
         }
     }
 
-    private fun startStreamingPlaybackWorker() {
-        playbackJob?.cancel()
-        playbackJob = scope.launch(Dispatchers.IO) {
+    private fun startNeuralStreamingWorker() {
+        neuralPlaybackJob?.cancel()
+        neuralPlaybackJob = scope.launch(Dispatchers.IO) {
             val track = audioTrack ?: return@launch
 
-            while (isActive && _isPlaying.value && currentPlayingIndex < sentences.size) {
-                val idx = currentPlayingIndex
+            while (isActive && _isPlaying.value && currentSentenceIndex < sentences.size) {
+                val idx = currentSentenceIndex
 
-                // Fetch pre-synthesized chunk or wait for it
-                var chunk = chunkCache[idx]
+                var chunk = neuralChunkCache[idx]
                 if (chunk == null) {
-                    chunk = ttsEngine.synthesizeSentence(idx, sentences[idx])
-                    chunkCache[idx] = chunk
-                }
-
-                // Write PCM audio data into AudioTrack continuous buffer
-                val samples = chunk.samples
-                var written = 0
-                while (written < samples.size && isActive && _isPlaying.value) {
-                    val toWrite = samples.size - written
-                    val result = track.write(samples, written, toWrite, AudioTrack.WRITE_BLOCKING)
-                    if (result > 0) {
-                        written += result
-                        totalFramesWritten += result
+                    chunk = kokoroTts.synthesizeSentence(idx, sentences[idx])
+                    if (chunk != null) {
+                        neuralChunkCache[idx] = chunk
                     }
                 }
 
-                // Subtle breath pause between sentences (120ms of blank PCM)
-                val pauseSamples = ShortArray((sampleRate * 0.12).toInt())
-                track.write(pauseSamples, 0, pauseSamples.size, AudioTrack.WRITE_BLOCKING)
-                totalFramesWritten += pauseSamples.size
+                if (chunk != null) {
+                    val samples = chunk.samples
+                    var written = 0
+                    while (written < samples.size && isActive && _isPlaying.value) {
+                        val toWrite = samples.size - written
+                        val result = track.write(samples, written, toWrite, AudioTrack.WRITE_BLOCKING)
+                        if (result > 0) {
+                            written += result
+                            totalFramesWritten += result
+                        }
+                    }
 
-                synchronized(sentenceFrameRanges) {
-                    sentenceFrameRanges.add(Pair(totalFramesWritten, idx))
+                    // Natural 100ms subtle pause between sentences
+                    val pause = ShortArray((sampleRate * 0.10).toInt())
+                    track.write(pause, 0, pause.size, AudioTrack.WRITE_BLOCKING)
+                    totalFramesWritten += pause.size
+
+                    synchronized(sentenceFrameRanges) {
+                        sentenceFrameRanges.add(Pair(totalFramesWritten, idx))
+                    }
+
+                    neuralChunkCache.remove(idx - 3)
+                    currentSentenceIndex++
+                } else {
+                    // Fallback to System TTS if neural synthesis missed
+                    scope.launch(Dispatchers.Main) {
+                        playWithSystemTts()
+                    }
+                    break
                 }
-
-                // Clean up older cache entries to keep memory low
-                chunkCache.remove(idx - 3)
-                currentPlayingIndex++
             }
 
-            if (currentPlayingIndex >= sentences.size) {
+            if (currentSentenceIndex >= sentences.size) {
                 _isPlaying.value = false
             }
         }
     }
 
-    private fun startPositionTracker() {
-        positionTrackerJob?.cancel()
-        positionTrackerJob = scope.launch(Dispatchers.Default) {
+    private fun startNeuralPositionTracker() {
+        neuralPositionJob?.cancel()
+        neuralPositionJob = scope.launch(Dispatchers.Default) {
             val track = audioTrack ?: return@launch
 
             while (isActive && _isPlaying.value) {
@@ -201,13 +287,14 @@ class AudioStreamPipeline(
                         }
                     }
                 }
-                kotlinx.coroutines.delay(40) // 25 fps UI update sync
+                kotlinx.coroutines.delay(40)
             }
         }
     }
 
     fun release() {
         stop()
+        systemTts.release()
         audioTrack?.release()
         audioTrack = null
     }
