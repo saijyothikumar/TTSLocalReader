@@ -27,6 +27,9 @@ interface ChapterDao {
     @Query("DELETE FROM chapters WHERE url = :url")
     suspend fun deleteChapter(url: String)
 
+    @Query("DELETE FROM chapters WHERE url IN (:urls)")
+    suspend fun deleteChapters(urls: List<String>)
+
     @Query("DELETE FROM chapters")
     suspend fun clearAllChapters()
 

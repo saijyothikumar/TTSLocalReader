@@ -167,8 +167,7 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                 isKokoroInstalled = uiState.isKokoroInstalled,
                 onSelectMode = { viewModel.setVoiceMode(it) },
                 onDownloadClick = { viewModel.downloadKokoroModel() },
-                onCancelDownload = { viewModel.cancelKokoroDownload() },
-                onDeleteModel = { viewModel.deleteKokoroModel() }
+                onCancelDownload = { viewModel.cancelKokoroDownload() }
             )
 
             // Info Notification Banner
@@ -325,90 +324,214 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
         )
     }
 
-    // Chapter Storage & Cache Management Dialog
+    // Chapter Storage & Cache Management Dialog with Checkboxes
+    var selectedUrls by remember { mutableStateOf(setOf<String>()) }
+
     if (cacheDialogVisible) {
         AlertDialog(
-            onDismissRequest = { cacheDialogVisible = false },
+            onDismissRequest = { 
+                cacheDialogVisible = false
+                selectedUrls = emptySet()
+            },
             containerColor = ObsidianSurface,
             title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.DeleteOutline,
-                        contentDescription = null,
-                        tint = AmberPrimary,
-                        modifier = Modifier.size(22.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteOutline,
+                            contentDescription = null,
+                            tint = AmberPrimary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Chapter Storage & Cache", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    }
+                    Text(
+                        text = "${uiState.cachedChapters.size} saved",
+                        color = AmberPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Chapter Storage & Cache", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 }
             },
             text = {
-                Column {
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "Scraped chapters are cached locally in offline database so they load instantly without network access.",
+                        text = "Chapters are stored on device disk (~20 KB each) in Room SQLite. Only the active chapter is loaded in RAM.",
                         color = TextSecondary,
-                        fontSize = 13.sp
+                        fontSize = 11.sp
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Surface(
-                        color = ObsidianSurfaceVariant,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            Text(
-                                text = "Cached Chapters: ${uiState.cachedChapterCount}",
-                                color = TextPrimary,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 13.sp
-                            )
-                            if (uiState.currentUrl.isNotBlank() && !uiState.currentUrl.startsWith("local_paste")) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "Current: ${uiState.chapterTitle}",
-                                    color = AmberPrimary,
-                                    fontSize = 12.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    if (uiState.cachedChapters.isNotEmpty()) {
+                        // Action & Selection Toolbar
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(ObsidianSurfaceVariant, RoundedCornerShape(8.dp))
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val allSelected = selectedUrls.size == uiState.cachedChapters.size && uiState.cachedChapters.isNotEmpty()
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.clickable {
+                                    selectedUrls = if (allSelected) emptySet() else uiState.cachedChapters.map { it.url }.toSet()
+                                }
+                            ) {
+                                Checkbox(
+                                    checked = allSelected,
+                                    onCheckedChange = { checked ->
+                                        selectedUrls = if (checked) uiState.cachedChapters.map { it.url }.toSet() else emptySet()
+                                    },
+                                    colors = CheckboxDefaults.colors(
+                                        checkedColor = AmberPrimary,
+                                        uncheckedColor = TextSecondary,
+                                        checkmarkColor = ObsidianBackground
+                                    )
                                 )
+                                Text("All", color = TextPrimary, fontSize = 12.sp)
+                            }
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (selectedUrls.isNotEmpty()) {
+                                    Button(
+                                        onClick = {
+                                            viewModel.deleteChapters(selectedUrls.toList())
+                                            selectedUrls = emptySet()
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = StatusError),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier.height(30.dp)
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Delete (${selectedUrls.size})", fontSize = 11.sp)
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                }
+
+                                TextButton(
+                                    onClick = {
+                                        viewModel.clearAllCachedChapters()
+                                        selectedUrls = emptySet()
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                                ) {
+                                    Text("Clear All", color = StatusError, fontSize = 11.sp)
+                                }
                             }
                         }
-                    }
-                    Spacer(modifier = Modifier.height(14.dp))
 
-                    if (uiState.currentUrl.isNotBlank() && !uiState.currentUrl.startsWith("local_paste")) {
-                        OutlinedButton(
-                            onClick = {
-                                viewModel.deleteCurrentChapter()
-                                cacheDialogVisible = false
-                            },
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = AmberPrimary),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Delete Current Chapter")
-                        }
                         Spacer(modifier = Modifier.height(8.dp))
-                    }
 
-                    Button(
-                        onClick = {
-                            viewModel.clearAllCachedChapters()
-                            cacheDialogVisible = false
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = StatusError),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Clear All Cached Chapters")
+                        // Scrollable List of Cached Chapters with Checkboxes
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 280.dp)
+                        ) {
+                            itemsIndexed(uiState.cachedChapters) { _, chapter ->
+                                val isChecked = selectedUrls.contains(chapter.url)
+                                val isCurrent = chapter.url == uiState.currentUrl
+                                Surface(
+                                    color = if (isCurrent) AmberGlow.copy(alpha = 0.15f) else ObsidianSurfaceVariant.copy(alpha = 0.5f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 3.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 6.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Checkbox(
+                                            checked = isChecked,
+                                            onCheckedChange = { checked ->
+                                                selectedUrls = if (checked) {
+                                                    selectedUrls + chapter.url
+                                                } else {
+                                                    selectedUrls - chapter.url
+                                                }
+                                            },
+                                            colors = CheckboxDefaults.colors(
+                                                checkedColor = AmberPrimary,
+                                                uncheckedColor = TextSecondary,
+                                                checkmarkColor = ObsidianBackground
+                                            ),
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clickable {
+                                                    if (!isCurrent) {
+                                                        viewModel.loadUrl(chapter.url)
+                                                        cacheDialogVisible = false
+                                                    }
+                                                }
+                                        ) {
+                                            Text(
+                                                text = chapter.chapterTitle.ifBlank { "Untitled Chapter" },
+                                                color = if (isCurrent) AmberPrimary else TextPrimary,
+                                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                                fontSize = 12.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "${chapter.novelTitle} • ${chapter.paragraphs.size} pars • Sentence ${chapter.lastSentenceIndex + 1}",
+                                                color = TextSecondary,
+                                                fontSize = 10.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                viewModel.deleteChapter(chapter.url)
+                                                selectedUrls = selectedUrls - chapter.url
+                                            },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Delete Chapter",
+                                                tint = TextSecondary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("No chapters currently stored in offline cache.", color = TextMuted, fontSize = 12.sp)
+                        }
                     }
                 }
             },
             confirmButton = {},
             dismissButton = {
-                TextButton(onClick = { cacheDialogVisible = false }) {
+                TextButton(onClick = {
+                    cacheDialogVisible = false
+                    selectedUrls = emptySet()
+                }) {
                     Text("Close", color = TextSecondary)
                 }
             }
@@ -423,8 +546,7 @@ fun VoiceEngineCard(
     isKokoroInstalled: Boolean,
     onSelectMode: (VoiceEngineMode) -> Unit,
     onDownloadClick: () -> Unit,
-    onCancelDownload: () -> Unit,
-    onDeleteModel: () -> Unit
+    onCancelDownload: () -> Unit
 ) {
     Surface(
         color = ObsidianSurface,
@@ -562,12 +684,6 @@ fun VoiceEngineCard(
                                         fontSize = 10.sp
                                     )
                                 }
-                            }
-                            TextButton(
-                                onClick = onDeleteModel,
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                            ) {
-                                Text("Delete", color = StatusError, fontSize = 11.sp)
                             }
                         }
                     } else if (modelStatus is ModelStatus.Downloading) {

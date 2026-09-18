@@ -32,6 +32,7 @@ data class ReaderUiState(
     val prevChapterUrl: String? = null,
     val modelStatus: ModelStatus = ModelStatus.NotDownloaded,
     val cachedChapterCount: Int = 0,
+    val cachedChapters: List<ChapterEntity> = emptyList(),
     val errorMessage: String? = null,
     val infoMessage: String? = null
 )
@@ -53,7 +54,10 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     init {
         viewModelScope.launch {
             chapterDao.getAllCachedChapters().collect { chapters ->
-                _uiState.value = _uiState.value.copy(cachedChapterCount = chapters.size)
+                _uiState.value = _uiState.value.copy(
+                    cachedChapterCount = chapters.size,
+                    cachedChapters = chapters
+                )
             }
         }
         viewModelScope.launch {
@@ -292,6 +296,25 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         } else {
             _uiState.value = _uiState.value.copy(
                 infoMessage = "Current content is not saved in cache."
+            )
+        }
+    }
+
+    fun deleteChapter(url: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            chapterDao.deleteChapter(url)
+            _uiState.value = _uiState.value.copy(
+                infoMessage = "Chapter removed from cache."
+            )
+        }
+    }
+
+    fun deleteChapters(urls: List<String>) {
+        if (urls.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            chapterDao.deleteChapters(urls)
+            _uiState.value = _uiState.value.copy(
+                infoMessage = "Deleted ${urls.size} chapter(s) from cache."
             )
         }
     }
