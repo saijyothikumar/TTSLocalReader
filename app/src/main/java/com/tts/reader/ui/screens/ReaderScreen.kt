@@ -11,7 +11,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -152,16 +152,18 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                 }
             }
 
-            // Voice Engine Status & Download Banner
-            VoiceModeStatusHeader(
-                voiceMode = uiState.voiceMode,
+            // Permanent Voice Engine Selection & Download Card
+            VoiceEngineCard(
+                selectedMode = uiState.voiceMode,
                 modelStatus = uiState.modelStatus,
+                isKokoroInstalled = uiState.isKokoroInstalled,
+                onSelectMode = { viewModel.setVoiceMode(it) },
                 onDownloadClick = { viewModel.downloadKokoroModel() },
-                onSwitchToSystem = { viewModel.setVoiceMode(VoiceEngineMode.SYSTEM_OFFLINE) },
-                onSwitchToNeural = { viewModel.setVoiceMode(VoiceEngineMode.KOKORO_NEURAL) }
+                onCancelDownload = { viewModel.cancelKokoroDownload() },
+                onDeleteModel = { viewModel.deleteKokoroModel() }
             )
 
-            // Informational Notification Banner
+            // Info Notification Banner
             uiState.infoMessage?.let { info ->
                 Surface(
                     color = AmberGlow,
@@ -180,6 +182,17 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                             fontSize = 12.sp,
                             modifier = Modifier.weight(1f)
                         )
+                        if (!uiState.isKokoroInstalled && uiState.modelStatus !is ModelStatus.Downloading) {
+                            Button(
+                                onClick = { viewModel.downloadKokoroModel() },
+                                colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier.padding(end = 6.dp)
+                            ) {
+                                Text("Download", color = ObsidianBackground, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                         IconButton(onClick = { viewModel.clearInfoMessage() }, modifier = Modifier.size(24.dp)) {
                             Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = AmberPrimary, modifier = Modifier.size(16.dp))
                         }
@@ -239,7 +252,7 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
         }
     }
 
-    // Clustered Speed Selector Sheet
+    // Clustered Speed Selector Modal Sheet
     if (speedSheetVisible) {
         SpeedSelectionSheet(
             currentSpeed = uiState.playbackSpeed,
@@ -248,7 +261,7 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
         )
     }
 
-    // Direct Text Paste Dialog
+    // Direct Story Text Paste Dialog
     if (rawTextDialogVisible) {
         AlertDialog(
             onDismissRequest = { rawTextDialogVisible = false },
@@ -306,12 +319,14 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
 }
 
 @Composable
-fun VoiceModeStatusHeader(
-    voiceMode: VoiceEngineMode,
+fun VoiceEngineCard(
+    selectedMode: VoiceEngineMode,
     modelStatus: ModelStatus,
+    isKokoroInstalled: Boolean,
+    onSelectMode: (VoiceEngineMode) -> Unit,
     onDownloadClick: () -> Unit,
-    onSwitchToSystem: () -> Unit,
-    onSwitchToNeural: () -> Unit
+    onCancelDownload: () -> Unit,
+    onDeleteModel: () -> Unit
 ) {
     Surface(
         color = ObsidianSurface,
@@ -321,92 +336,263 @@ fun VoiceModeStatusHeader(
             .padding(horizontal = 12.dp, vertical = 4.dp)
     ) {
         Column(modifier = Modifier.padding(10.dp)) {
+            // Segmented Mode Selector
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(ObsidianSurfaceVariant)
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                // Voice Switcher Pills
-                Row(
+                // System Voice Button
+                Surface(
+                    color = if (selectedMode == VoiceEngineMode.SYSTEM_OFFLINE) AmberPrimary else Color.Transparent,
+                    shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(ObsidianSurfaceVariant)
-                        .padding(3.dp)
+                        .weight(1f)
+                        .clickable { onSelectMode(VoiceEngineMode.SYSTEM_OFFLINE) }
                 ) {
-                    Surface(
-                        color = if (voiceMode == VoiceEngineMode.SYSTEM_OFFLINE) AmberPrimary else Color.Transparent,
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.clickable { onSwitchToSystem() }
+                    Row(
+                        modifier = Modifier.padding(vertical = 6.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = null,
+                            tint = if (selectedMode == VoiceEngineMode.SYSTEM_OFFLINE) ObsidianBackground else TextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "🔊 System Voice (Offline)",
-                            color = if (voiceMode == VoiceEngineMode.SYSTEM_OFFLINE) ObsidianBackground else TextSecondary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            text = "System Voice",
+                            color = if (selectedMode == VoiceEngineMode.SYSTEM_OFFLINE) ObsidianBackground else TextSecondary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
+                }
 
-                    Surface(
-                        color = if (voiceMode == VoiceEngineMode.KOKORO_NEURAL) AmberPrimary else Color.Transparent,
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.clickable { onSwitchToNeural() }
+                // Neural Voice Button
+                Surface(
+                    color = if (selectedMode == VoiceEngineMode.KOKORO_NEURAL) AmberPrimary else Color.Transparent,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onSelectMode(VoiceEngineMode.KOKORO_NEURAL) }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(vertical = 6.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Icon(
+                            imageVector = Icons.Default.Psychology,
+                            contentDescription = null,
+                            tint = if (selectedMode == VoiceEngineMode.KOKORO_NEURAL) ObsidianBackground else TextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "✨ Kokoro AI Voice",
-                            color = if (voiceMode == VoiceEngineMode.KOKORO_NEURAL) ObsidianBackground else TextSecondary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            text = "Neural Voice",
+                            color = if (selectedMode == VoiceEngineMode.KOKORO_NEURAL) ObsidianBackground else TextSecondary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
             }
 
-            // If Kokoro is active or requested but not downloaded, show download / progress helper
-            if (voiceMode == VoiceEngineMode.KOKORO_NEURAL && modelStatus !is ModelStatus.Ready) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Kokoro Voice (~85MB) not installed",
-                            color = TextPrimary,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 12.sp
-                        )
-                        Text(
-                            text = "Resumable download for studio-quality offline speech",
-                            color = TextSecondary,
-                            fontSize = 10.sp
-                        )
-                    }
-                    Button(
-                        onClick = onDownloadClick,
-                        colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Download", color = ObsidianBackground, fontSize = 11.sp)
-                    }
-                }
+            Spacer(modifier = Modifier.height(8.dp))
 
-                if (modelStatus is ModelStatus.Downloading) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    LinearProgressIndicator(
-                        progress = { modelStatus.progressPercent / 100f },
-                        color = AmberPrimary,
-                        trackColor = ObsidianSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Text(
-                        text = "${modelStatus.currentItem} (${modelStatus.progressPercent}%)",
-                        color = TextMuted,
-                        fontSize = 10.sp,
-                        modifier = Modifier.padding(top = 2.dp)
-                    )
+            // Current Mode Active Status Line
+            if (selectedMode == VoiceEngineMode.SYSTEM_OFFLINE) {
+                Text(
+                    text = "Active: Device built-in offline voice (Works 100% offline with zero setup)",
+                    color = TextSecondary,
+                    fontSize = 11.sp
+                )
+            } else {
+                Text(
+                    text = if (isKokoroInstalled) {
+                        "Active: Kokoro Neural Voice (82M INT8). Studio-quality AI speech."
+                    } else {
+                        "Selected: Kokoro Neural Voice. Download package below to enable AI voice."
+                    },
+                    color = if (isKokoroInstalled) AmberPrimary else TextMuted,
+                    fontSize = 11.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Kokoro Neural Model Status & Action Card (ALWAYS VISIBLE)
+            Surface(
+                color = ObsidianSurfaceVariant.copy(alpha = 0.6f),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    if (isKokoroInstalled) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = StatusSuccess,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = "Kokoro Neural Model Installed",
+                                        color = StatusSuccess,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "103 MB package ready for offline AI playback",
+                                        color = TextSecondary,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                            TextButton(
+                                onClick = onDeleteModel,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text("Delete", color = StatusError, fontSize = 11.sp)
+                            }
+                        }
+                    } else if (modelStatus is ModelStatus.Downloading) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Downloading Neural Model (${modelStatus.progressPercent}%)",
+                                    color = AmberPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                TextButton(
+                                    onClick = onCancelDownload,
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                                ) {
+                                    Text("Cancel", color = StatusError, fontSize = 11.sp)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            LinearProgressIndicator(
+                                progress = { modelStatus.progressPercent / 100f },
+                                color = AmberPrimary,
+                                trackColor = ObsidianBackground,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = modelStatus.currentItem,
+                                color = TextSecondary,
+                                fontSize = 10.sp
+                            )
+                        }
+                    } else if (modelStatus is ModelStatus.Error) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ErrorOutline,
+                                    contentDescription = null,
+                                    tint = StatusError,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = modelStatus.message,
+                                    color = StatusError,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = onDownloadClick,
+                                colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = null,
+                                    tint = ObsidianBackground,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Retry Download (Resumes automatically)", color = ObsidianBackground, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    } else {
+                        // Not Downloaded: Always visible full-width action button
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Kokoro Neural AI Voice (103 MB)",
+                                        color = TextPrimary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Studio-quality voice (download once, runs 100% offline)",
+                                        color = TextSecondary,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = onDownloadClick,
+                                colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = null,
+                                    tint = ObsidianBackground,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Download Kokoro Neural Voice (103 MB)",
+                                    color = ObsidianBackground,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -654,7 +840,7 @@ fun SpeedSelectionSheet(
                 value = sliderValue,
                 onValueChange = {
                     sliderValue = it
-                    onSpeedSelected((Math.round(it * 20) / 20f)) // snap to 0.05 steps
+                    onSpeedSelected((Math.round(it * 20) / 20f))
                 },
                 valueRange = 0.5f..3.0f,
                 colors = SliderDefaults.colors(

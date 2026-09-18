@@ -51,9 +51,16 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             modelManager.status.collect { status ->
                 val isInstalled = status is ModelStatus.Ready
+                val currentInfo = _uiState.value.infoMessage
+                val newInfo = if (status is ModelStatus.Ready && currentInfo?.contains("downloading", ignoreCase = true) == true) {
+                    "Kokoro Neural Voice downloaded & ready! Natural AI speech activated."
+                } else {
+                    currentInfo
+                }
                 _uiState.value = _uiState.value.copy(
                     modelStatus = status,
-                    isKokoroInstalled = isInstalled
+                    isKokoroInstalled = isInstalled,
+                    infoMessage = newInfo
                 )
             }
         }
@@ -68,21 +75,23 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 saveProgress(index)
             }
         }
-        viewModelScope.launch {
-            audioPipeline.voiceMode.collect { mode ->
-                _uiState.value = _uiState.value.copy(voiceMode = mode)
-            }
-        }
     }
 
     fun setVoiceMode(mode: VoiceEngineMode) {
+        _uiState.value = _uiState.value.copy(voiceMode = mode)
+        audioPipeline.setEngineMode(mode)
+
         if (mode == VoiceEngineMode.KOKORO_NEURAL && !modelManager.isModelReady()) {
-            _uiState.value = _uiState.value.copy(
-                infoMessage = "Kokoro neural model not yet downloaded. Using offline System Voice."
-            )
-            audioPipeline.setEngineMode(VoiceEngineMode.SYSTEM_OFFLINE)
-        } else {
-            audioPipeline.setEngineMode(mode)
+            if (modelManager.status.value !is ModelStatus.Downloading) {
+                downloadKokoroModel()
+                _uiState.value = _uiState.value.copy(
+                    infoMessage = "Downloading Kokoro Neural Voice (103 MB)... Using offline System Voice until download completes."
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    infoMessage = "Kokoro Neural Voice is downloading. Using offline System Voice until download completes."
+                )
+            }
         }
     }
 
@@ -95,7 +104,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
 
-            // 1. Check offline local Room cache
             val cached = chapterDao.getChapterByUrl(url)
             if (cached != null) {
                 applyChapter(
@@ -111,7 +119,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 return@launch
             }
 
-            // 2. Fetch from web
             val result = scraper.scrape(url)
             result.onSuccess { scraped ->
                 val entity = ChapterEntity(
@@ -134,7 +141,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                     startIndex = 0
                 )
 
-                // Background prefetch for next chapter
                 scraped.nextChapterUrl?.let { prefetchNextChapter(it) }
             }.onFailure { error ->
                 _uiState.value = _uiState.value.copy(
@@ -251,9 +257,13 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun cancelKokoroDownload() {
+        modelManager.cancelDownload()
+    }
+
     fun deleteKokoroModel() {
         modelManager.deleteModel()
-        audioPipeline.setEngineMode(VoiceEngineMode.SYSTEM_OFFLINE)
+        setVoiceMode(VoiceEngineMode.SYSTEM_OFFLINE)
     }
 
     private fun saveProgress(sentenceIndex: Int) {

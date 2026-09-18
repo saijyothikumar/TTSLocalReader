@@ -97,6 +97,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jsoup:jsoup:1.17.2")
 
+    // Archive Extraction (tar.bz2 / zip)
+    implementation("org.apache.commons:commons-compress:1.26.1")
+
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 

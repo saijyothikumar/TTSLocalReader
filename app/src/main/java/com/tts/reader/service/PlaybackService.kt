@@ -163,7 +163,7 @@ class PlaybackService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(currentChapterTitle)
             .setContentText(currentNovelTitle)
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSmallIcon(com.tts.reader.R.drawable.ic_notification)
             .setContentIntent(pendingIntent)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .addAction(
