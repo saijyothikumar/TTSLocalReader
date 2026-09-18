@@ -3,9 +3,11 @@ package com.tts.reader.ui.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.tts.reader.TTSApp
 import com.tts.reader.data.local.AppDatabase
 import com.tts.reader.data.local.ChapterEntity
 import com.tts.reader.data.scraper.NovelScraper
+import com.tts.reader.service.PlaybackService
 import com.tts.reader.tts.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,10 +41,10 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private val chapterDao = db.chapterDao()
     private val scraper = NovelScraper()
 
-    val modelManager = ModelManager(application)
-    val systemTts = SystemTtsEngine(application)
-    val kokoroTts = KokoroTtsEngine(application, modelManager)
-    val audioPipeline = AudioStreamPipeline(application, systemTts, kokoroTts, viewModelScope)
+    val modelManager: ModelManager
+        get() = TTSApp.instance.modelManager
+    val audioPipeline: AudioStreamPipeline
+        get() = TTSApp.instance.audioPipeline
 
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
@@ -223,7 +225,13 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun togglePlayPause() {
         if (_uiState.value.isPlaying) {
             audioPipeline.pause()
+            PlaybackService.pausePlayback(getApplication())
         } else {
+            PlaybackService.startPlayback(
+                getApplication(),
+                _uiState.value.novelTitle,
+                _uiState.value.chapterTitle
+            )
             audioPipeline.play()
         }
     }
@@ -277,6 +285,5 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
-        audioPipeline.release()
     }
 }

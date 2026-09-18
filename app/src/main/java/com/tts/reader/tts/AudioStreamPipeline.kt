@@ -66,20 +66,21 @@ class AudioStreamPipeline(
 
     private fun setupSystemTtsListeners() {
         systemTts.onSentenceStartListener = { index ->
-            if (_voiceMode.value == VoiceEngineMode.SYSTEM_OFFLINE) {
+            if (_voiceMode.value == VoiceEngineMode.SYSTEM_OFFLINE && _isPlaying.value) {
                 _activeSentenceIndex.value = index
                 currentSentenceIndex = index
+
+                // Queue exactly 1 lookahead sentence in advance for true gapless playback
+                val next = index + 1
+                if (next < sentences.size) {
+                    systemTts.speakSentence(next, sentences[next], TextToSpeech.QUEUE_ADD)
+                }
             }
         }
 
         systemTts.onSentenceDoneListener = { index ->
             if (_voiceMode.value == VoiceEngineMode.SYSTEM_OFFLINE) {
-                val next = index + 1
-                if (next < sentences.size) {
-                    if (_isPlaying.value) {
-                        systemTts.speakSentence(next, sentences[next], TextToSpeech.QUEUE_ADD)
-                    }
-                } else {
+                if (index >= sentences.size - 1) {
                     _isPlaying.value = false
                 }
             }
@@ -145,14 +146,8 @@ class AudioStreamPipeline(
 
     private fun playWithSystemTts() {
         systemTts.speed = playbackSpeed
-        val startIdx = currentSentenceIndex.coerceIn(0, sentences.size - 1)
+        val startIdx = currentSentenceIndex.coerceIn(0, (sentences.size - 1).coerceAtLeast(0))
         systemTts.speakSentence(startIdx, sentences[startIdx], TextToSpeech.QUEUE_FLUSH)
-
-        // Queue lookahead sentence immediately for gapless playback
-        val nextIdx = startIdx + 1
-        if (nextIdx < sentences.size) {
-            systemTts.speakSentence(nextIdx, sentences[nextIdx], TextToSpeech.QUEUE_ADD)
-        }
     }
 
     private fun playWithKokoroNeural() {
