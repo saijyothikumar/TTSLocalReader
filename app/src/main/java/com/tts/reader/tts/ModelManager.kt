@@ -43,7 +43,14 @@ class ModelManager(private val context: Context) {
     val modelDir: File
         get() = File(context.filesDir, "kokoro_model")
 
-    val modelFile: File get() = File(modelDir, "model.onnx")
+    val modelFile: File
+        get() {
+            val f = File(modelDir, "model.onnx")
+            if (f.exists() && f.length() > 0) return f
+            val fInt8 = File(modelDir, "model.int8.onnx")
+            if (fInt8.exists() && fInt8.length() > 0) return fInt8
+            return f
+        }
     val voicesFile: File get() = File(modelDir, "voices.bin")
     val tokensFile: File get() = File(modelDir, "tokens.txt")
     val espeakDataDir: File get() = File(modelDir, "espeak-ng-data")
@@ -207,8 +214,13 @@ class ModelManager(private val context: Context) {
         }
     }
 
+    private val dangerousFileExtensions = setOf(
+        "so", "dex", "apk", "jar", "class", "sh", "exe", "dll", "bat", "cmd", "vbs", "ps1", "py", "elf"
+    )
+
     private val allowedFileExtensions = setOf(
-        "onnx", "bin", "txt", "json", "dict", "table", "phones", "model", "sample"
+        "onnx", "bin", "txt", "json", "dict", "table", "phones", "model", "sample",
+        "md", "markdown", "rst", "yaml", "yml", "wav", "license", "png", "jpg"
     )
 
     private fun validateDownloadUrl(url: String) {
@@ -236,9 +248,8 @@ class ModelManager(private val context: Context) {
         // 2. Reject Disallowed Executable Extensions (.so, .dex, .apk, .sh, .exe, .jar)
         if (!isDirectory) {
             val ext = targetFile.extension.lowercase()
-            val isEspeakData = cleanName.contains("espeak-ng-data")
-            if (!isEspeakData && ext.isNotEmpty() && ext !in allowedFileExtensions) {
-                throw SecurityException("Security check failed: Disallowed file type in voice archive ($cleanName). Only AI model weights and configs are permitted.")
+            if (ext in dangerousFileExtensions) {
+                throw SecurityException("Security violation: Executable code or script detected in voice package ($cleanName). Extraction aborted.")
             }
         }
 
@@ -247,7 +258,7 @@ class ModelManager(private val context: Context) {
 
     private fun validateExtractedModelFiles() {
         if (!modelFile.exists() || modelFile.length() < 10_000_000) {
-            throw IllegalStateException("Model integrity validation failed: model.onnx is missing or corrupt.")
+            throw IllegalStateException("Model integrity validation failed: model.onnx (or model.int8.onnx) is missing or corrupt (size: ${if (modelFile.exists()) modelFile.length() else 0} bytes).")
         }
         if (!voicesFile.exists() || voicesFile.length() < 10_000) {
             throw IllegalStateException("Model integrity validation failed: voices.bin is missing or corrupt.")
@@ -264,6 +275,9 @@ class ModelManager(private val context: Context) {
                     TarArchiveInputStream(bzIn).use { tarIn ->
                         var entry = tarIn.nextEntry
                         while (entry != null) {
+                            if (entry.isSymbolicLink || entry.isLink) {
+                                throw SecurityException("Security violation: Symbolic links in voice archive are prohibited.")
+                            }
                             val cleanName = entry.name.replace("\\", "/")
                             val targetFile = validateEntryPath(destDir, cleanName, entry.isDirectory)
 
@@ -311,11 +325,22 @@ class ModelManager(private val context: Context) {
                 val subFiles = f.listFiles() ?: continue
                 for (sub in subFiles) {
                     val dest = File(dir, sub.name)
-                    if (!dest.exists()) {
+                    if (sub.isDirectory && dest.exists()) {
+                        sub.copyRecursively(dest, overwrite = true)
+                        sub.deleteRecursively()
+                    } else if (!dest.exists()) {
                         sub.renameTo(dest)
                     }
                 }
+                f.deleteRecursively()
             }
+        }
+
+        // If archive extracted model.int8.onnx, ensure model.onnx exists
+        val int8Model = File(dir, "model.int8.onnx")
+        val onnxModel = File(dir, "model.onnx")
+        if (int8Model.exists() && (!onnxModel.exists() || onnxModel.length() == 0L)) {
+            int8Model.renameTo(onnxModel)
         }
     }
 
