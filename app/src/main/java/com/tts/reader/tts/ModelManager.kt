@@ -89,6 +89,9 @@ class ModelManager(private val context: Context) {
     suspend fun downloadModel(
         archiveUrl: String = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-en-v0_19.tar.bz2"
     ) = withContext(Dispatchers.IO) {
+        // Security check: Validate URL protocol and trusted source
+        validateDownloadUrl(archiveUrl)
+
         isDownloadCancelled = false
         val tempArchive = File(context.cacheDir, "kokoro_download.archive")
 
@@ -181,6 +184,9 @@ class ModelManager(private val context: Context) {
                 // Flatten directory structure so files are located in modelDir directly
                 flattenModelDirectory(modelDir)
 
+                // Verify model integrity and file size boundaries
+                validateExtractedModelFiles()
+
                 writeManifest()
                 tempArchive.delete()
 
@@ -201,6 +207,56 @@ class ModelManager(private val context: Context) {
         }
     }
 
+    private val allowedFileExtensions = setOf(
+        "onnx", "bin", "txt", "json", "dict", "table", "phones", "model", "sample"
+    )
+
+    private fun validateDownloadUrl(url: String) {
+        val uri = java.net.URI(url)
+        if (uri.scheme?.lowercase() != "https") {
+            throw SecurityException("Security check failed: Insecure download URL. HTTPS required.")
+        }
+        val host = uri.host?.lowercase() ?: throw SecurityException("Security check failed: Invalid URL host.")
+        val trustedDomains = listOf("github.com", "githubusercontent.com", "huggingface.co")
+        if (!trustedDomains.any { host == it || host.endsWith(".$it") }) {
+            throw SecurityException("Security check failed: Untrusted voice model source host ($host). Only official GitHub and HuggingFace sources are permitted.")
+        }
+    }
+
+    private fun validateEntryPath(destDir: File, cleanName: String, isDirectory: Boolean): File {
+        val targetFile = File(destDir, cleanName)
+        val canonicalDest = destDir.canonicalPath
+        val canonicalTarget = targetFile.canonicalPath
+
+        // 1. Tar Slip / Zip Slip Path Traversal Protection
+        if (!canonicalTarget.startsWith(canonicalDest + File.separator) && canonicalTarget != canonicalDest) {
+            throw SecurityException("Security violation: Malicious path traversal detected in archive entry: $cleanName")
+        }
+
+        // 2. Reject Disallowed Executable Extensions (.so, .dex, .apk, .sh, .exe, .jar)
+        if (!isDirectory) {
+            val ext = targetFile.extension.lowercase()
+            val isEspeakData = cleanName.contains("espeak-ng-data")
+            if (!isEspeakData && ext.isNotEmpty() && ext !in allowedFileExtensions) {
+                throw SecurityException("Security check failed: Disallowed file type in voice archive ($cleanName). Only AI model weights and configs are permitted.")
+            }
+        }
+
+        return targetFile
+    }
+
+    private fun validateExtractedModelFiles() {
+        if (!modelFile.exists() || modelFile.length() < 10_000_000) {
+            throw IllegalStateException("Model integrity validation failed: model.onnx is missing or corrupt.")
+        }
+        if (!voicesFile.exists() || voicesFile.length() < 10_000) {
+            throw IllegalStateException("Model integrity validation failed: voices.bin is missing or corrupt.")
+        }
+        if (!tokensFile.exists() || tokensFile.length() < 100) {
+            throw IllegalStateException("Model integrity validation failed: tokens.txt is missing or corrupt.")
+        }
+    }
+
     private fun extractTarBz2(archiveFile: File, destDir: File) {
         FileInputStream(archiveFile).use { fis ->
             BufferedInputStream(fis).use { bis ->
@@ -209,7 +265,7 @@ class ModelManager(private val context: Context) {
                         var entry = tarIn.nextEntry
                         while (entry != null) {
                             val cleanName = entry.name.replace("\\", "/")
-                            val targetFile = File(destDir, cleanName)
+                            val targetFile = validateEntryPath(destDir, cleanName, entry.isDirectory)
 
                             if (entry.isDirectory) {
                                 targetFile.mkdirs()
@@ -232,7 +288,7 @@ class ModelManager(private val context: Context) {
             var entry = zis.nextEntry
             while (entry != null) {
                 val cleanName = entry.name.replace("\\", "/")
-                val targetFile = File(destDir, cleanName)
+                val targetFile = validateEntryPath(destDir, cleanName, entry.isDirectory)
 
                 if (entry.isDirectory) {
                     targetFile.mkdirs()

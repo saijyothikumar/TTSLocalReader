@@ -39,6 +39,7 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
 
     var inputUrl by remember { mutableStateOf("") }
     var rawTextDialogVisible by remember { mutableStateOf(false) }
+    var cacheDialogVisible by remember { mutableStateOf(false) }
     var rawInputText by remember { mutableStateOf("") }
     var rawInputTitle by remember { mutableStateOf("") }
     var speedSheetVisible by remember { mutableStateOf(false) }
@@ -82,6 +83,13 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                         Icon(
                             imageVector = Icons.Default.EditNote,
                             contentDescription = "Paste Custom Text",
+                            tint = AmberPrimary
+                        )
+                    }
+                    IconButton(onClick = { cacheDialogVisible = true }) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteOutline,
+                            contentDescription = "Manage Chapter Cache",
                             tint = AmberPrimary
                         )
                     }
@@ -312,6 +320,96 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
             dismissButton = {
                 TextButton(onClick = { rawTextDialogVisible = false }) {
                     Text("Cancel", color = TextSecondary)
+                }
+            }
+        )
+    }
+
+    // Chapter Storage & Cache Management Dialog
+    if (cacheDialogVisible) {
+        AlertDialog(
+            onDismissRequest = { cacheDialogVisible = false },
+            containerColor = ObsidianSurface,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.DeleteOutline,
+                        contentDescription = null,
+                        tint = AmberPrimary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Chapter Storage & Cache", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                }
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Scraped chapters are cached locally in offline database so they load instantly without network access.",
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Surface(
+                        color = ObsidianSurfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(
+                                text = "Cached Chapters: ${uiState.cachedChapterCount}",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp
+                            )
+                            if (uiState.currentUrl.isNotBlank() && !uiState.currentUrl.startsWith("local_paste")) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Current: ${uiState.chapterTitle}",
+                                    color = AmberPrimary,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    if (uiState.currentUrl.isNotBlank() && !uiState.currentUrl.startsWith("local_paste")) {
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.deleteCurrentChapter()
+                                cacheDialogVisible = false
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = AmberPrimary),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Delete Current Chapter")
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    Button(
+                        onClick = {
+                            viewModel.clearAllCachedChapters()
+                            cacheDialogVisible = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = StatusError),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Clear All Cached Chapters")
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { cacheDialogVisible = false }) {
+                    Text("Close", color = TextSecondary)
                 }
             }
         )

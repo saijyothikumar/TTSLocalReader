@@ -31,6 +31,7 @@ data class ReaderUiState(
     val nextChapterUrl: String? = null,
     val prevChapterUrl: String? = null,
     val modelStatus: ModelStatus = ModelStatus.NotDownloaded,
+    val cachedChapterCount: Int = 0,
     val errorMessage: String? = null,
     val infoMessage: String? = null
 )
@@ -50,6 +51,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
 
     init {
+        viewModelScope.launch {
+            chapterDao.getAllCachedChapters().collect { chapters ->
+                _uiState.value = _uiState.value.copy(cachedChapterCount = chapters.size)
+            }
+        }
         viewModelScope.launch {
             modelManager.status.collect { status ->
                 val isInstalled = status is ModelStatus.Ready
@@ -272,6 +278,31 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun deleteKokoroModel() {
         modelManager.deleteModel()
         setVoiceMode(VoiceEngineMode.SYSTEM_OFFLINE)
+    }
+
+    fun deleteCurrentChapter() {
+        val url = _uiState.value.currentUrl
+        if (url.isNotBlank() && !url.startsWith("local_paste")) {
+            viewModelScope.launch(Dispatchers.IO) {
+                chapterDao.deleteChapter(url)
+                _uiState.value = _uiState.value.copy(
+                    infoMessage = "Current chapter removed from local cache."
+                )
+            }
+        } else {
+            _uiState.value = _uiState.value.copy(
+                infoMessage = "Current content is not saved in cache."
+            )
+        }
+    }
+
+    fun clearAllCachedChapters() {
+        viewModelScope.launch(Dispatchers.IO) {
+            chapterDao.clearAllChapters()
+            _uiState.value = _uiState.value.copy(
+                infoMessage = "All cached chapters cleared from local storage."
+            )
+        }
     }
 
     private fun saveProgress(sentenceIndex: Int) {

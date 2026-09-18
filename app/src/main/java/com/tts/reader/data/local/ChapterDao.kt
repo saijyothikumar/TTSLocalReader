@@ -26,4 +26,10 @@ interface ChapterDao {
 
     @Query("DELETE FROM chapters WHERE url = :url")
     suspend fun deleteChapter(url: String)
+
+    @Query("DELETE FROM chapters")
+    suspend fun clearAllChapters()
+
+    @Query("SELECT COUNT(*) FROM chapters")
+    suspend fun getCachedChapterCount(): Int
 }
