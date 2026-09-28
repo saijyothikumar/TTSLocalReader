@@ -5,15 +5,13 @@
 -keep class * extends androidx.room.RoomDatabase
 -dontwarn androidx.room.paging.**
 
-# Sherpa-ONNX & JNI
--keep class com.k2fsa.sherpa.onnx.** { *; }
--keepclassmembers class * {
-    native <methods>;
-}
 
 # Jsoup
 -keep public class org.jsoup.** { public *; }
+-dontwarn org.jsoup.**
+-dontwarn org.jspecify.annotations.**
 
 # OkHttp
 -dontwarn okhttp3.**
 -dontwarn okio.**
+
