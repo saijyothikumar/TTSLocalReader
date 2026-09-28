@@ -37,5 +37,4 @@ A lightweight, offline-first Text-to-Speech (TTS) application targeting Android 
   1. `org.gradle.vfs.watch=false` is set in `gradle.properties`.
   2. If clean or packaging fails with `Unable to delete directory`, strip read-only attributes with `attrib -r -s -h app\build\*.* /s /d` and run `Remove-Item app\build -Recurse -Force`.
   3. When running build commands, stop the daemon afterwards with `.\gradlew.bat --stop` to release all file handles and ensure `OpenJDK Platform binary` does not consume system memory in the background.
-
-
+- **APK Optimization & R8 Shrinking**: Debug builds (`assembleDebug`) package unminified DEX bytecode (~54 MB) due to `material-icons-extended` containing thousands of vector icons. Production release builds (`assembleRelease`) have R8 code shrinking (`isMinifyEnabled = true`) and resource shrinking (`isShrinkResources = true`) enabled, tree-shaking unused icons down to a ultra-compact **2.60 MB** APK. Release builds use `signingConfig = signingConfigs.getByName("debug")` for immediate sideloading.
