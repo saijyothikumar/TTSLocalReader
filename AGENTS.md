@@ -10,12 +10,12 @@ A lightweight, offline-first Text-to-Speech (TTS) application targeting Android 
 
 ## Locked Architectural Decisions
 - **Framework**: Native Android (Kotlin + Jetpack Compose)
-- **Hybrid TTS Engine**:
-  1. *System TTS (Default / Instant)*: Built-in Android `TextToSpeech` requiring **0 MB download**, functioning 100% offline immediately on first launch with zero setup.
-  2. *Kokoro-82M Neural Voice (Optional)*: High-fidelity studio-quality AI voice with a resumable (HTTP `Range`), auto-retrying chunked downloader that persists state across app restarts via local manifest.
-- **Audio Pipeline**: Continuous lookahead sentence queue ensuring zero audible gap between paragraphs and millisecond-accurate synchronized UI text highlighting.
-- **Background Architecture**: Android Foreground Service + `MediaSessionCompat` with lock-screen notification and partial wake-locks.
-- **Content Extractor & Storage**: Universal Web Novel Extractor (supporting Ranobes, RoyalRoad, NovelFull, ScribbleHub, etc., with universal comment & ad stripping) with Local Room DB caching and automatic "Next Chapter" link pre-fetching.
+- **TTS Engine (100% Offline, Zero-Setup)**: Dedicated built-in Android `TextToSpeech` requiring **0 MB download**, functioning 100% offline immediately on first launch with zero setup. Heavy external neural voice models (Kokoro ONNX) and their runtime dependencies have been completely removed.
+- **Audio Pipeline**: Continuous lookahead sentence queue ensuring zero audible gap between paragraphs and millisecond-accurate synchronized UI text highlighting with dynamic pitch, speed presets (0.75x–2.0x), and voice selection.
+- **Text Sanitization**: `TextSanitizer` automatically detects visual horizontal dividers (`-------`, `***`, `===`, `~*~*~`) and author/translator notes (`Author's Note`, `TL Note`). Visual dividers are rendered as elegant amber glyphs (`✦`) in the reading UI and are completely silenced during TTS speech playback.
+- **Background Architecture**: Android Foreground Service + `MediaSessionCompat` with lock-screen notification and partial wake-locks. Foreground notification and playback service are immediately terminated on task swipe (`onTaskRemoved`).
+- **Content Extractor & Multi-Step Lookahead**: Universal Web Novel Extractor with early navigation link extraction (preserving Previous/Next links before DOM cleaning), 2-chapter lookahead background prefetching ($N+1, N+2$), cache-hit prefetch chaining, and title deduplication.
+- **Interactive Cloudflare Solver**: In-app Obsidian Amber styled `CaptchaSolverSheet` with embedded WebView and cookie synchronization to OkHttp via `CookieManager`.
 
 ## Locked UI Theme (Obsidian Amber)
 - **Background**: `#121214` (Deep Charcoal)
@@ -30,3 +30,12 @@ A lightweight, offline-first Text-to-Speech (TTS) application targeting Android 
 - **Root AGENTS.md**: Maintain and update this file with architectural decisions and guidelines.
 - **Theme Lock**: Obsidian Amber is permanently locked. Never fall back to generic AI defaults.
 - **Offline / Local First**: TTS inference and novel text must operate completely locally without external API latency.
+
+## Build & Environment Invariants
+- **Gradle & JVM Toolchain**: The Android Studio environment on this host uses JBR 25 (Java 25). However, Kotlin 1.9.24 / KSP requires Java 21 (`toolchainVersion=21` in `gradle/gradle-daemon-jvm.properties`). Gradle 9.3.1 automatically fetches Eclipse Adoptium JDK 21 to run the compiler daemon, preventing `IllegalArgumentException: 25.0.3` during `kspDebugKotlin`.
+- **OneDrive & File Lock Workarounds**: Because the project is located in OneDrive (`OneDrive\Desktop\Projects\TTS app`), Microsoft OneDrive continuously attempts to sync build artifacts, causing file locks (`Access is denied`), `*(1)*` file collisions, and read-only cloud reparse points on generated folders. To prevent build errors:
+  1. `org.gradle.vfs.watch=false` is set in `gradle.properties`.
+  2. If clean or packaging fails with `Unable to delete directory`, strip read-only attributes with `attrib -r -s -h app\build\*.* /s /d` and run `Remove-Item app\build -Recurse -Force`.
+  3. When running build commands, stop the daemon afterwards with `.\gradlew.bat --stop` to release all file handles and ensure `OpenJDK Platform binary` does not consume system memory in the background.
+
+

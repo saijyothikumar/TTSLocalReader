@@ -55,3 +55,6 @@ captures/
 # OS-specific files
 .DS_Store
 Thumbs.db
+
+# OneDrive sync conflict artifacts
+*(*)*

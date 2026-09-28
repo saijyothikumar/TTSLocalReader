@@ -281,11 +281,22 @@ class PlaybackService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        // Cleanly remove notification and stop service when user swipes app from Recents
+        stopServiceAndNotification()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         releaseWakeLock()
         serviceScope.cancel()
         mediaSession?.release()
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.cancel(NOTIFICATION_ID)
+        } catch (_: Exception) {}
     }
 
     companion object {

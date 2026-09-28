@@ -61,6 +61,94 @@ class NovelScraperTest {
     }
 
     @Test
+    fun testNavigationExtractionAndTitleDeduplication() {
+        val sampleHtml = """
+            <!DOCTYPE html>
+            <html>
+            <head><title>Chapter 120 - Gathering Clouds - Read Novel</title></head>
+            <body>
+                <div class="chapter-nav">
+                    <a href="https://example-novels.com/c119.html" rel="prev" class="btn prev">Previous</a>
+                    <a href="https://example-novels.com/c121.html" rel="next" class="btn next">Next</a>
+                </div>
+                <h1 class="chapter-title">Chapter 120 - Gathering Clouds</h1>
+                <div class="reading-content">
+                    <p>The dawn broke over the misty valley.</p>
+                    <p>-------------------------</p>
+                    <p>Lin Feng stood at the peak of the mountain.</p>
+                </div>
+                <div class="chapter-nav">
+                    <a href="https://example-novels.com/c119.html">Prev</a>
+                    <a href="https://example-novels.com/c121.html">Next</a>
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val scraper = NovelScraper()
+        val doc = Jsoup.parse(sampleHtml, "https://example-novels.com/c120.html")
+        val chapter = scraper.parseDocument(doc, "https://example-novels.com/c120.html")
+
+        assertEquals("Chapter 120 - Gathering Clouds", chapter.chapterTitle)
+        // Previous and Next links should be successfully extracted even though .chapter-nav is stripped
+        assertEquals("https://example-novels.com/c119.html", chapter.prevChapterUrl)
+        assertEquals("https://example-novels.com/c121.html", chapter.nextChapterUrl)
+
+        // Novel title should NOT duplicate the chapter title
+        assertTrue(chapter.novelTitle.isEmpty() || chapter.novelTitle != chapter.chapterTitle)
+    }
+
+    @Test
+    fun testBreadcrumbDoesNotHijackNavigation() {
+        val sampleHtml = """
+            <!DOCTYPE html>
+            <html>
+            <head><title>Chapter 10</title></head>
+            <body>
+                <div class="breadcrumbs">
+                    <a href="https://example.com/">Home ></a>
+                    <a href="https://example.com/genre/fantasy">Fantasy ></a>
+                </div>
+                <div class="reading-content"><p>Chapter story content goes here.</p></div>
+                <div class="footer-nav">
+                    <a href="https://example.com/c11" class="btn next">Next Chapter</a>
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val scraper = NovelScraper()
+        val doc = Jsoup.parse(sampleHtml, "https://example.com/c10")
+        val chapter = scraper.parseDocument(doc, "https://example.com/c10")
+
+        // Must point to chapter 11, NOT to the breadcrumbs "Fantasy >" or "Home >"
+        assertEquals("https://example.com/c11", chapter.nextChapterUrl)
+    }
+
+    @Test
+    fun testUrlSecurityValidation() = kotlinx.coroutines.runBlocking {
+        val scraper = NovelScraper()
+
+        // Localhost / Loopback
+        val res1 = scraper.scrape("http://localhost:8080/secret")
+        assertTrue(res1.isFailure)
+
+        val res2 = scraper.scrape("http://127.0.0.1/admin")
+        assertTrue(res2.isFailure)
+
+        // Private IPv4 subnets
+        val res3 = scraper.scrape("http://192.168.1.1/")
+        assertTrue(res3.isFailure)
+
+        val res4 = scraper.scrape("http://10.0.0.1/internal")
+        assertTrue(res4.isFailure)
+
+        // Non-http schemes
+        val res5 = scraper.scrape("file:///data/data/com.tts.reader/databases")
+        assertTrue(res5.isFailure)
+    }
+
+    @Test
     fun testRawTextParsing() {
         val scraper = NovelScraper()
         val raw = "Paragraph 1 line.\n\nParagraph 2 line with more words."
@@ -70,3 +158,4 @@ class NovelScraperTest {
         assertEquals("Paragraph 1 line.", chapter.paragraphs[0])
     }
 }
+

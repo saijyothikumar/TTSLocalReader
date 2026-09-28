@@ -1,41 +1,56 @@
-# Neural Novel TTS 🎧📖
+# TTS Local Reader 🎧📖
 
-<div align="center">
-  <img src="app_icon.jpg" width="140" height="140" alt="Neural Novel TTS Icon" style="border-radius: 28px;" />
-  <h3>Offline, High-Fidelity Text-to-Speech Web Novel Reader for Android</h3>
-  <p>Smooth, human-like neural voices with zero-gap paragraph playback.</p>
-</div>
+A lightweight, 100% offline Text-to-Speech (TTS) web novel reader for Android. Designed for long-form reading with zero-gap audio playback, intelligent text sanitization, and seamless chapter prefetching.
 
 ---
 
-## 🌟 Key Highlights
+## 🌟 Features
 
-- **Instant Zero-Download Playback**: Features a **Hybrid TTS Engine**. Works 100% offline out-of-the-box on first launch using your device's built-in Android System TTS with zero downloads required!
-- **Optional Kokoro-82M Neural Voice**: Upgrade anytime to studio-quality neural voices with a resumable (HTTP `Range`), auto-retrying chunked downloader that persists cleanly across app restarts.
-- **Zero-Gap Paragraph Audio**: Seamless lookahead synthesis queue feeds continuous audio, eliminating the awkward 1-2 second pauses between paragraphs found in other apps.
-- **Sample-Accurate Text Highlighting**: Real-time sentence tracking synced with playback head frames for accurate karaoke-style auto-scrolling.
-- **Universal Web Novel Scraper**: Automatically extracts story chapters, filters out reader comments and navigation chrome, and auto-detects "Next Chapter" links for offline pre-fetching.
-- **Clustered Speed Controls**: Compact speed button opening an expandable menu with presets (0.5x to 2.5x) and a fine-tuning slider.
-- **Screen-Off Background Playback**: Android `ForegroundService` with `PARTIAL_WAKE_LOCK` and `MediaSessionCompat` lock screen controls.
-- **Obsidian Amber Theme**: Eye-friendly dark mode interface (`#121214` background with glowing `#F59E0B` amber accents).
-- **Android 9+ Compatibility**: Designed to run seamlessly on older and newer devices alike (API 28+).
-
----
-
-## 📱 How to Build in Android Studio
-
-1. **Open Project**: Launch Android Studio, select **Open**, and navigate to this repository folder.
-2. **Gradle Sync**: Let Android Studio complete the initial Gradle sync.
-3. **Run**: Connect your Android 9+ phone or emulator and click **Run 'app'** (`Shift + F10`).
-4. **Generate APK**: In the top menu, click **Build** $\rightarrow$ **Build Bundle(s) / APK(s)** $\rightarrow$ **Build APK(s)**.
+- **⚡ 100% Offline, Zero-Setup TTS**: Built directly on Android's native `TextToSpeech` engine. Works immediately on first launch with **0 MB downloads** and zero setup.
+- **🔇 Intelligent Text Sanitizer**: Automatically detects and completely silences horizontal visual dividers (`-------`, `***`, `===`, `~*~*~`) and author/translator notes (`Author's Note`, `TL Note`, `A/N:`) during speech playback. The reading interface renders dividers as elegant glowing amber glyphs (`✦`).
+- **⏩ Multi-Step Lookahead Prefetching**: Prefetches both Next ($N+1$) and Next-Next ($N+2$) chapters in the background with human-like cadence, ensuring instant, lag-free chapter transitions.
+- **🔄 Continuous Zero-Gap Playback**: Continuous lookahead paragraph queuing eliminates the awkward 1–2 second silence between paragraphs found in typical TTS apps.
+- **🎯 Synchronized Reading UI**: Sample-accurate sentence highlighting synced with the audio playhead and automatic auto-scrolling.
+- **🛡️ Bot Protection Solver**: In-app Obsidian Amber styled challenge sheet to solve Cloudflare Turnstile / Bot challenges, automatically syncing clearance cookies to OkHttp.
+- **📱 Background Playback**: Android Foreground Service with `MediaSessionCompat` lock screen controls and partial wake-locks for screen-off reading.
+- **🎨 Obsidian Amber Theme**: Premium eye-friendly dark mode interface (`#121214` background, `#1E1E24` cards, and warm glowing `#F59E0B` amber accents).
+- **⚙️ Voice & Reading Controls**: Quick speed presets (0.75x, 1.0x, 1.25x, 1.5x, 2.0x), fine-tuned pitch slider, and selector for all installed system voices.
 
 ---
 
-## 📂 Architecture Overview
+## 📱 How to Build
 
-- `com.tts.reader.data.scraper.NovelScraper`: Targeted Ranobes / web novel extractor with comment sanitization.
-- `com.tts.reader.data.local`: Room Database for offline chapter caching and resume progress.
-- `com.tts.reader.tts.ModelManager`: Resilient one-tap first-run downloader for Kokoro ONNX model weights.
-- `com.tts.reader.tts.AudioStreamPipeline`: Streaming `AudioTrack` lookahead audio pipeline with sample-accurate highlight sync.
-- `com.tts.reader.service.PlaybackService`: Background playback service with lock-screen notification and wake locks.
-- `com.tts.reader.ui`: Jetpack Compose UI with locked Obsidian Amber theme.
+### Using Android Studio
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/saijyothikumar/TTSLocalReader.git
+   ```
+2. Open the project folder in **Android Studio**.
+3. Allow Gradle to sync.
+4. Run on an Android device or emulator (API 28+ / Android 9.0+).
+
+### Using the Command Line
+```powershell
+# Windows
+.\gradlew.bat assembleDebug
+
+# Linux / macOS
+./gradlew assembleDebug
+```
+The compiled APK will be generated at:
+`app/build/outputs/apk/debug/app-debug.apk`
+
+---
+
+## 📂 Architecture
+
+- **`data/scraper`**: Universal web novel extractor (`NovelScraper`), divider/note speech filter (`TextSanitizer`), and challenge exceptions.
+- **`data/local`**: Offline Room Database (`AppDatabase`, `ChapterEntity`, `ChapterDao`) for chapter storage and reading progress.
+- **`tts`**: Double-buffered lookahead sentence queue (`AudioStreamPipeline`) and native Android TTS wrapper (`SystemTtsEngine`).
+- **`service`**: Android Foreground Service (`PlaybackService`) with media notification and wake-lock management.
+- **`ui`**: Jetpack Compose UI (`ReaderScreen`, `ReaderViewModel`, `CaptchaSolverSheet`) in the Obsidian Amber theme.
+
+---
+
+## 📄 License
+This project is open-source and available under the [MIT License](LICENSE).

@@ -6,10 +6,13 @@ import androidx.lifecycle.viewModelScope
 import com.tts.reader.TTSApp
 import com.tts.reader.data.local.AppDatabase
 import com.tts.reader.data.local.ChapterEntity
+import com.tts.reader.data.scraper.CaptchaChallengeException
 import com.tts.reader.data.scraper.NovelScraper
+import com.tts.reader.data.scraper.TextSanitizer
 import com.tts.reader.service.PlaybackService
-import com.tts.reader.tts.*
+import com.tts.reader.tts.AudioStreamPipeline
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,7 +20,7 @@ import kotlinx.coroutines.launch
 
 data class ReaderUiState(
     val isLoading: Boolean = false,
-    val novelTitle: String = "Universal Reader",
+    val novelTitle: String = "",
     val chapterTitle: String = "No Chapter Loaded",
     val currentUrl: String = "",
     val paragraphs: List<String> = emptyList(),
@@ -26,15 +29,16 @@ data class ReaderUiState(
     val activeSentenceIndex: Int = 0,
     val isPlaying: Boolean = false,
     val playbackSpeed: Float = 1.0f,
-    val voiceMode: VoiceEngineMode = VoiceEngineMode.SYSTEM_OFFLINE,
-    val isKokoroInstalled: Boolean = false,
+    val pitch: Float = 1.0f,
+    val selectedVoiceName: String? = null,
+    val availableVoices: List<String> = emptyList(),
     val nextChapterUrl: String? = null,
     val prevChapterUrl: String? = null,
-    val modelStatus: ModelStatus = ModelStatus.NotDownloaded,
     val cachedChapterCount: Int = 0,
     val cachedChapters: List<ChapterEntity> = emptyList(),
     val errorMessage: String? = null,
-    val infoMessage: String? = null
+    val infoMessage: String? = null,
+    val captchaChallengeUrl: String? = null
 )
 
 class ReaderViewModel(application: Application) : AndroidViewModel(application) {
@@ -43,8 +47,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private val chapterDao = db.chapterDao()
     private val scraper = NovelScraper()
 
-    val modelManager: ModelManager
-        get() = TTSApp.instance.modelManager
     val audioPipeline: AudioStreamPipeline
         get() = TTSApp.instance.audioPipeline
 
@@ -52,6 +54,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
 
     init {
+        // Collect cached chapters from Room DB
         viewModelScope.launch {
             chapterDao.getAllCachedChapters().collect { chapters ->
                 _uiState.value = _uiState.value.copy(
@@ -60,51 +63,55 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
         }
-        viewModelScope.launch {
-            modelManager.status.collect { status ->
-                val isInstalled = status is ModelStatus.Ready
-                val currentInfo = _uiState.value.infoMessage
-                val newInfo = if (status is ModelStatus.Ready && currentInfo?.contains("downloading", ignoreCase = true) == true) {
-                    "Kokoro Neural Voice downloaded & ready! Natural AI speech activated."
-                } else {
-                    currentInfo
-                }
-                _uiState.value = _uiState.value.copy(
-                    modelStatus = status,
-                    isKokoroInstalled = isInstalled,
-                    infoMessage = newInfo
-                )
-            }
-        }
+
+        // Collect playback state
         viewModelScope.launch {
             audioPipeline.isPlaying.collect { playing ->
                 _uiState.value = _uiState.value.copy(isPlaying = playing)
             }
         }
+
+        // Collect active sentence index & save progress
         viewModelScope.launch {
             audioPipeline.activeSentenceIndex.collect { index ->
                 _uiState.value = _uiState.value.copy(activeSentenceIndex = index)
                 saveProgress(index)
             }
         }
+
+        // Load available installed system TTS voices
+        viewModelScope.launch {
+            delay(500) // Allow TextToSpeech engine time to complete initialization
+            loadInstalledVoices()
+        }
     }
 
-    fun setVoiceMode(mode: VoiceEngineMode) {
-        _uiState.value = _uiState.value.copy(voiceMode = mode)
-        audioPipeline.setEngineMode(mode)
+    private fun loadInstalledVoices() {
+        try {
+            val voices = TTSApp.instance.systemTts.getAvailableVoices().map { it.name }
+            val current = TTSApp.instance.systemTts.getCurrentVoiceName()
+            _uiState.value = _uiState.value.copy(
+                availableVoices = voices,
+                selectedVoiceName = current
+            )
+        } catch (_: Exception) {}
+    }
 
-        if (mode == VoiceEngineMode.KOKORO_NEURAL && !modelManager.isModelReady()) {
-            if (modelManager.status.value !is ModelStatus.Downloading) {
-                downloadKokoroModel()
-                _uiState.value = _uiState.value.copy(
-                    infoMessage = "Downloading Kokoro Neural Voice (103 MB)... Using offline System Voice until download completes."
-                )
-            } else {
-                _uiState.value = _uiState.value.copy(
-                    infoMessage = "Kokoro Neural Voice is downloading. Using offline System Voice until download completes."
-                )
-            }
+    fun setSystemVoice(voiceName: String) {
+        val success = TTSApp.instance.systemTts.setVoiceByName(voiceName)
+        if (success) {
+            _uiState.value = _uiState.value.copy(selectedVoiceName = voiceName)
         }
+    }
+
+    fun setPitch(pitch: Float) {
+        audioPipeline.pitch = pitch
+        _uiState.value = _uiState.value.copy(pitch = pitch)
+    }
+
+    fun setSpeed(speed: Float) {
+        audioPipeline.playbackSpeed = speed
+        _uiState.value = _uiState.value.copy(playbackSpeed = speed)
     }
 
     fun clearInfoMessage() {
@@ -115,12 +122,34 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.value = _uiState.value.copy(errorMessage = null)
     }
 
-    fun loadUrl(url: String) {
-        if (url.isBlank()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+    fun dismissCaptchaChallenge() {
+        _uiState.value = _uiState.value.copy(captchaChallengeUrl = null)
+    }
 
-            val cached = chapterDao.getChapterByUrl(url)
+    fun onCaptchaSolved() {
+        val url = _uiState.value.captchaChallengeUrl ?: _uiState.value.currentUrl
+        dismissCaptchaChallenge()
+        if (url.isNotBlank()) {
+            loadUrl(url)
+        }
+    }
+
+    fun loadUrl(url: String) {
+        val trimmedUrl = url.trim()
+        if (trimmedUrl.isBlank()) return
+
+        // If user pastes the URL of the chapter that's currently open, don't interrupt playback
+        if (trimmedUrl == _uiState.value.currentUrl) {
+            _uiState.value = _uiState.value.copy(
+                infoMessage = "This chapter is already open."
+            )
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, captchaChallengeUrl = null)
+
+            val cached = chapterDao.getChapterByUrl(trimmedUrl)
             if (cached != null) {
                 applyChapter(
                     novelTitle = cached.novelTitle,
@@ -132,13 +161,16 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                     startIndex = cached.lastSentenceIndex
                 )
                 _uiState.value = _uiState.value.copy(isLoading = false)
+                // Continue prefetch chain for subsequent chapters
+                cached.nextChapterUrl?.let { prefetchNextChapters(it) }
                 return@launch
             }
 
-            val result = scraper.scrape(url)
+            val previousUrl = _uiState.value.currentUrl.takeIf { it.startsWith("http") }
+            val result = scraper.scrape(trimmedUrl, referer = previousUrl)
             result.onSuccess { scraped ->
                 val entity = ChapterEntity(
-                    url = url,
+                    url = trimmedUrl,
                     novelTitle = scraped.novelTitle,
                     chapterTitle = scraped.chapterTitle,
                     paragraphs = scraped.paragraphs,
@@ -151,30 +183,38 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                     novelTitle = scraped.novelTitle,
                     chapterTitle = scraped.chapterTitle,
                     paragraphs = scraped.paragraphs,
-                    url = url,
+                    url = trimmedUrl,
                     nextUrl = scraped.nextChapterUrl,
                     prevUrl = scraped.prevChapterUrl,
                     startIndex = 0
                 )
 
-                scraped.nextChapterUrl?.let { prefetchNextChapter(it) }
+                scraped.nextChapterUrl?.let { prefetchNextChapters(it) }
             }.onFailure { error ->
-                val friendlyMessage = when {
-                    error is java.net.UnknownHostException || error is java.net.ConnectException ->
-                        "Unable to connect to the novel website. Please check your internet connection and try again."
-                    error is java.net.SocketTimeoutException ->
-                        "The website took too long to respond. Tap reload or paste chapter text directly."
-                    error.message?.contains("403", ignoreCase = true) == true || error.message?.contains("cloudflare", ignoreCase = true) == true ->
-                        "The website has bot protection active. Please copy and paste the chapter text directly using the paste icon above."
-                    error.message?.contains("No story content", ignoreCase = true) == true ->
-                        "Could not detect story paragraphs on this page. You can paste the chapter text directly using the paste icon above."
-                    else ->
-                        "Unable to load chapter from this link. You can paste the text directly using the paste icon above."
+                if (error is CaptchaChallengeException) {
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        captchaChallengeUrl = error.url,
+                        errorMessage = "Bot protection detected. Tap below to solve challenge directly in the app."
+                    )
+                } else {
+                    val friendlyMessage = when {
+                        error is java.net.UnknownHostException || error is java.net.ConnectException ->
+                            "Unable to connect to the novel website. Please check your internet connection and try again."
+                        error is java.net.SocketTimeoutException ->
+                            "The website took too long to respond. Tap reload or paste chapter text directly."
+                        error.message?.contains("403", ignoreCase = true) == true || error.message?.contains("cloudflare", ignoreCase = true) == true ->
+                            "The website has bot protection active. Solve challenge or paste chapter text directly."
+                        error.message?.contains("No story content", ignoreCase = true) == true ->
+                            "Could not detect story paragraphs on this page. You can paste the chapter text directly using the paste icon above."
+                        else ->
+                            "Unable to load chapter from this link. You can paste the text directly using the paste icon above."
+                    }
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        errorMessage = friendlyMessage
+                    )
                 }
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    errorMessage = friendlyMessage
-                )
             }
         }
     }
@@ -182,7 +222,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun loadRawText(title: String, text: String) {
         val parsed = scraper.parseRawText(title, text)
         applyChapter(
-            novelTitle = parsed.novelTitle,
+            novelTitle = "",
             chapterTitle = parsed.chapterTitle,
             paragraphs = parsed.paragraphs,
             url = "local_paste_${System.currentTimeMillis()}",
@@ -212,11 +252,15 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             sentenceMap.add(0) // Maps to chapter header (item 0 in reading list)
         }
 
+        // Intelligently sanitize paragraphs: skip visual dividers (-------, ***, etc.) from voice synthesis
         paragraphs.forEachIndexed { pIdx, paragraph ->
-            val sentences = NovelScraper.splitIntoSentences(paragraph)
-            for (s in sentences) {
-                allSentences.add(s)
-                sentenceMap.add(if (hasTitle) pIdx + 1 else pIdx)
+            val speechSanitized = TextSanitizer.sanitizeForSpeech(paragraph)
+            if (speechSanitized != null) {
+                val sentences = NovelScraper.splitIntoSentences(speechSanitized)
+                for (s in sentences) {
+                    allSentences.add(s)
+                    sentenceMap.add(if (hasTitle) pIdx + 1 else pIdx)
+                }
             }
         }
 
@@ -236,21 +280,48 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
-    private fun prefetchNextChapter(url: String) {
+    /**
+     * Lookahead prefetcher for Next Chapter (N+1) and Next-Next Chapter (N+2).
+     * Binds previous chapter links explicitly to guarantee backwards navigation works.
+     */
+    private fun prefetchNextChapters(firstNextUrl: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val existing = chapterDao.getChapterByUrl(url)
-            if (existing == null) {
-                scraper.scrape(url).getOrNull()?.let { nextScraped ->
-                    chapterDao.insertChapter(
-                        ChapterEntity(
-                            url = url,
-                            novelTitle = nextScraped.novelTitle,
-                            chapterTitle = nextScraped.chapterTitle,
-                            paragraphs = nextScraped.paragraphs,
-                            nextChapterUrl = nextScraped.nextChapterUrl,
-                            prevChapterUrl = nextScraped.prevChapterUrl
-                        )
+            val currentUrl = _uiState.value.currentUrl
+
+            // 1. Prefetch Chapter N+1 with a polite 1-second delay so server sees natural reading cadence
+            delay(1000)
+            var next1 = chapterDao.getChapterByUrl(firstNextUrl)
+            if (next1 == null) {
+                val res1 = scraper.scrape(firstNextUrl, referer = currentUrl).getOrNull()
+                if (res1 != null) {
+                    next1 = ChapterEntity(
+                        url = firstNextUrl,
+                        novelTitle = res1.novelTitle,
+                        chapterTitle = res1.chapterTitle,
+                        paragraphs = res1.paragraphs,
+                        nextChapterUrl = res1.nextChapterUrl,
+                        prevChapterUrl = res1.prevChapterUrl ?: currentUrl
                     )
+                    chapterDao.insertChapter(next1)
+                }
+            }
+
+            // 2. Prefetch Chapter N+2 (Next-Next) with a polite 1.2s throttle
+            val nextNextUrl = next1?.nextChapterUrl
+            if (!nextNextUrl.isNullOrBlank()) {
+                delay(1200)
+                if (chapterDao.getChapterByUrl(nextNextUrl) == null) {
+                    scraper.scrape(nextNextUrl, referer = firstNextUrl).getOrNull()?.let { res2 ->
+                        val next2 = ChapterEntity(
+                            url = nextNextUrl,
+                            novelTitle = res2.novelTitle,
+                            chapterTitle = res2.chapterTitle,
+                            paragraphs = res2.paragraphs,
+                            nextChapterUrl = res2.nextChapterUrl,
+                            prevChapterUrl = res2.prevChapterUrl ?: firstNextUrl
+                        )
+                        chapterDao.insertChapter(next2)
+                    }
                 }
             }
         }
@@ -274,11 +345,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         audioPipeline.seekToSentence(index)
     }
 
-    fun setSpeed(speed: Float) {
-        audioPipeline.playbackSpeed = speed
-        _uiState.value = _uiState.value.copy(playbackSpeed = speed)
-    }
-
     fun nextChapter() {
         val next = _uiState.value.nextChapterUrl
         if (!next.isNullOrBlank()) {
@@ -291,21 +357,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         if (!prev.isNullOrBlank()) {
             loadUrl(prev)
         }
-    }
-
-    fun downloadKokoroModel() {
-        viewModelScope.launch {
-            modelManager.downloadModel()
-        }
-    }
-
-    fun cancelKokoroDownload() {
-        modelManager.cancelDownload()
-    }
-
-    fun deleteKokoroModel() {
-        modelManager.deleteModel()
-        setVoiceMode(VoiceEngineMode.SYSTEM_OFFLINE)
     }
 
     fun selectChapter(url: String) {
@@ -384,9 +435,5 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 chapterDao.updateProgress(url, sentenceIndex, 0)
             }
         }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
     }
 }

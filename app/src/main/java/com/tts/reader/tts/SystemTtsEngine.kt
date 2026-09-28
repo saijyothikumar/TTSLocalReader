@@ -30,6 +30,32 @@ class SystemTtsEngine(private val context: Context) {
             tts?.setPitch(value)
         }
 
+    fun getAvailableVoices(): List<android.speech.tts.Voice> {
+        return try {
+            tts?.voices?.filter { !it.isNetworkConnectionRequired && it.locale.language.startsWith("en") }
+                ?.sortedBy { it.name }
+                ?: tts?.voices?.sortedBy { it.name }?.toList() ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    fun getCurrentVoiceName(): String? = tts?.voice?.name
+
+    fun setVoiceByName(voiceName: String): Boolean {
+        return try {
+            val voice = tts?.voices?.firstOrNull { it.name == voiceName }
+            if (voice != null) {
+                tts?.voice = voice
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     var onSentenceStartListener: ((Int) -> Unit)? = null
     var onSentenceDoneListener: ((Int) -> Unit)? = null
     var onChunkStartListener: ((String) -> Unit)? = null
