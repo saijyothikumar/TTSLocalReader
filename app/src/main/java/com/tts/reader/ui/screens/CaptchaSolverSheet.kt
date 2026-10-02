@@ -187,6 +187,10 @@ fun CaptchaSolverSheet(
                                     if (scheme != "http" && scheme != "https") {
                                         return true
                                     }
+                                    val path = reqUrl.path?.lowercase() ?: ""
+                                    if (path.contains("/comments/") || path.contains("/comment/")) {
+                                        return true
+                                    }
                                     return false
                                 }
 
@@ -206,7 +210,10 @@ fun CaptchaSolverSheet(
                                             title.contains("Attention Required", ignoreCase = true) ||
                                             title.contains("Cloudflare", ignoreCase = true)
 
-                                    if (!isChallengePage && currentUrl != null && !currentUrl.contains("challenges.cloudflare.com")) {
+                                    val isCommentsPage = currentUrl?.contains("/comments/") == true ||
+                                            currentUrl?.contains("/comment/") == true
+
+                                    if (!isChallengePage && !isCommentsPage && currentUrl != null && !currentUrl.contains("challenges.cloudflare.com")) {
                                         // The user completed the challenge!
                                         onChallengeSolved()
                                     }

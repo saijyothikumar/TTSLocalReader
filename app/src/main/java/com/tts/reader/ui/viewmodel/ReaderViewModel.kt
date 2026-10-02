@@ -138,6 +138,14 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         val trimmedUrl = url.trim()
         if (trimmedUrl.isBlank()) return
 
+        // Guard against comments pages being requested directly
+        if (!scraper.isValidChapterUrl(trimmedUrl)) {
+            _uiState.value = _uiState.value.copy(
+                errorMessage = "Invalid chapter link. The link appears to point to comments or non-chapter content."
+            )
+            return
+        }
+
         // If user pastes the URL of the chapter that's currently open, don't interrupt playback
         if (trimmedUrl == _uiState.value.currentUrl) {
             _uiState.value = _uiState.value.copy(
@@ -151,19 +159,23 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
             val cached = chapterDao.getChapterByUrl(trimmedUrl)
             if (cached != null) {
-                applyChapter(
-                    novelTitle = cached.novelTitle,
-                    chapterTitle = cached.chapterTitle,
-                    paragraphs = cached.paragraphs,
-                    url = cached.url,
-                    nextUrl = cached.nextChapterUrl,
-                    prevUrl = cached.prevChapterUrl,
-                    startIndex = cached.lastSentenceIndex
-                )
-                _uiState.value = _uiState.value.copy(isLoading = false)
-                // Continue prefetch chain for subsequent chapters
-                cached.nextChapterUrl?.let { prefetchNextChapters(it) }
-                return@launch
+                if (isCorruptedChapter(cached)) {
+                    chapterDao.deleteChapter(cached.url)
+                } else {
+                    applyChapter(
+                        novelTitle = cached.novelTitle,
+                        chapterTitle = cached.chapterTitle,
+                        paragraphs = cached.paragraphs,
+                        url = cached.url,
+                        nextUrl = cached.nextChapterUrl,
+                        prevUrl = cached.prevChapterUrl,
+                        startIndex = cached.lastSentenceIndex
+                    )
+                    _uiState.value = _uiState.value.copy(isLoading = false)
+                    // Continue prefetch chain for subsequent chapters
+                    cached.nextChapterUrl?.let { prefetchNextChapters(it) }
+                    return@launch
+                }
             }
 
             val previousUrl = _uiState.value.currentUrl.takeIf { it.startsWith("http") }
@@ -280,21 +292,35 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
+    private fun isCorruptedChapter(chapter: ChapterEntity): Boolean {
+        return chapter.url.contains("/comments/") ||
+                chapter.chapterTitle.equals("Comments", ignoreCase = true) ||
+                chapter.paragraphs.any { it.contains("this page is for comments only", ignoreCase = true) }
+    }
+
     /**
      * Lookahead prefetcher for Next Chapter (N+1) and Next-Next Chapter (N+2).
      * Binds previous chapter links explicitly to guarantee backwards navigation works.
      */
     private fun prefetchNextChapters(firstNextUrl: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val currentUrl = _uiState.value.currentUrl
+        val currentUrl = _uiState.value.currentUrl
+        if (!scraper.isValidChapterUrl(firstNextUrl, currentUrl)) {
+            return
+        }
 
+        viewModelScope.launch(Dispatchers.IO) {
             // 1. Prefetch Chapter N+1 with a polite 1-second delay so server sees natural reading cadence
             delay(1000)
             var next1 = chapterDao.getChapterByUrl(firstNextUrl)
+            if (next1 != null && isCorruptedChapter(next1)) {
+                chapterDao.deleteChapter(firstNextUrl)
+                next1 = null
+            }
+
             if (next1 == null) {
                 val res1 = scraper.scrape(firstNextUrl, referer = currentUrl).getOrNull()
                 if (res1 != null) {
-                    next1 = ChapterEntity(
+                    val entity1 = ChapterEntity(
                         url = firstNextUrl,
                         novelTitle = res1.novelTitle,
                         chapterTitle = res1.chapterTitle,
@@ -302,17 +328,24 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                         nextChapterUrl = res1.nextChapterUrl,
                         prevChapterUrl = res1.prevChapterUrl ?: currentUrl
                     )
-                    chapterDao.insertChapter(next1)
+                    chapterDao.insertChapter(entity1)
+                    next1 = entity1
                 }
             }
 
             // 2. Prefetch Chapter N+2 (Next-Next) with a polite 1.2s throttle
             val nextNextUrl = next1?.nextChapterUrl
-            if (!nextNextUrl.isNullOrBlank()) {
+            if (!nextNextUrl.isNullOrBlank() && scraper.isValidChapterUrl(nextNextUrl, firstNextUrl)) {
                 delay(1200)
-                if (chapterDao.getChapterByUrl(nextNextUrl) == null) {
+                var next2 = chapterDao.getChapterByUrl(nextNextUrl)
+                if (next2 != null && isCorruptedChapter(next2)) {
+                    chapterDao.deleteChapter(nextNextUrl)
+                    next2 = null
+                }
+
+                if (next2 == null) {
                     scraper.scrape(nextNextUrl, referer = firstNextUrl).getOrNull()?.let { res2 ->
-                        val next2 = ChapterEntity(
+                        val entity2 = ChapterEntity(
                             url = nextNextUrl,
                             novelTitle = res2.novelTitle,
                             chapterTitle = res2.chapterTitle,
@@ -320,7 +353,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                             nextChapterUrl = res2.nextChapterUrl,
                             prevChapterUrl = res2.prevChapterUrl ?: firstNextUrl
                         )
-                        chapterDao.insertChapter(next2)
+                        chapterDao.insertChapter(entity2)
                     }
                 }
             }

@@ -38,3 +38,17 @@ A lightweight, offline-first Text-to-Speech (TTS) application targeting Android 
   2. If clean or packaging fails with `Unable to delete directory`, strip read-only attributes with `attrib -r -s -h app\build\*.* /s /d` and run `Remove-Item app\build -Recurse -Force`.
   3. When running build commands, stop the daemon afterwards with `.\gradlew.bat --stop` to release all file handles and ensure `OpenJDK Platform binary` does not consume system memory in the background.
 - **APK Optimization & R8 Shrinking**: Debug builds (`assembleDebug`) package unminified DEX bytecode (~54 MB) due to `material-icons-extended` containing thousands of vector icons. Production release builds (`assembleRelease`) have R8 code shrinking (`isMinifyEnabled = true`) and resource shrinking (`isShrinkResources = true`) enabled, tree-shaking unused icons down to a ultra-compact **2.60 MB** APK. Release builds use `signingConfig = signingConfigs.getByName("debug")` for immediate sideloading.
+
+## Resolved Issues & Hardened Invariants
+- **Ranobes / DLE CMS Navigation Hijacking via Comments Sidebar**:
+  - *Root Cause*: Ranobes uses `#next` and `#prev` IDs on chapter navigation buttons, which were missed by an older selector check (`#next_url`). The scraper fell back to scanning all document `<a>` tags before stripping the global comments sidebar (`#rightside`). Links in the sidebar to comments pages (e.g. `https://ranobes.net/.../comments/...`) containing user remarks like *"looking forward to next chapter"* were falsely identified as the next chapter URL. Loading that URL fetched a Ranobes 3-paragraph placeholder *"This page is for comments only..."*, from which subsequent sidebar scans jumped to completely unrelated novels.
+  - *Fix & Verified Pattern*:
+    1. `findNavigationLink` prioritizes exact `#next` / `#prev` IDs, class selectors, and scoped containers (`.chapter-nav`, `.navigation`, etc.).
+    2. Document cloning with aggressive sidebar/comment stripping (`#rightside`, `.comments`, `aside`, etc.) before any fallback search.
+    3. Strict keyword matching and length limit (`<= 25` chars) to reject user comments.
+    4. Same-novel path prefix matching preference and same-domain requirement.
+    5. `isValidChapterUrl` universally rejects `/comments/`, `/comment/`, `#comments`, `/user/`, `/catalog/`, etc.
+    6. `parseDocument` actively detects and rejects *"This page is for comments only"* placeholders with `IllegalStateException`.
+    7. `ReaderViewModel` automatically purges any previously corrupted comments chapter from the local Room database cache and protects prefetch chaining.
+    8. `CaptchaSolverSheet` blocks navigation to `/comments/` and ignores comments URLs when checking challenge completion.
+

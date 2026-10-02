@@ -88,7 +88,7 @@ class NovelScraper {
         }
     }
 
-    private fun validatePublicUrl(urlString: String) {
+    fun validatePublicUrl(urlString: String) {
         val uri = try {
             java.net.URI(urlString)
         } catch (_: Exception) {
@@ -111,6 +111,106 @@ class NovelScraper {
         if (host.matches(Regex("^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[0-1])\\.|169\\.254\\.).*"))) {
             throw SecurityException("Access to private intranet IP ranges is prohibited: $host")
         }
+
+        val path = uri.path?.lowercase() ?: ""
+        if (path.contains("/comments/") || path.contains("/comment/") || path.endsWith("/comments") || path.endsWith("/comment")) {
+            throw IllegalArgumentException("URL points to a comments page, not a story chapter: $urlString")
+        }
+    }
+
+    fun isValidChapterUrl(url: String?, baseUrl: String = "", expectedBaseHost: String? = null): Boolean {
+        if (url.isNullOrBlank()) return false
+        val trimmed = url.trim()
+        if (baseUrl.isNotBlank() && trimmed.equals(baseUrl.trim(), ignoreCase = true)) return false
+        if (trimmed.startsWith("javascript:", ignoreCase = true) ||
+            trimmed.startsWith("mailto:", ignoreCase = true) ||
+            trimmed.startsWith("tel:", ignoreCase = true) ||
+            trimmed.startsWith("#")) {
+            return false
+        }
+
+        val uri = try {
+            java.net.URI(trimmed)
+        } catch (_: Exception) {
+            return false
+        }
+
+        val scheme = uri.scheme?.lowercase() ?: return false
+        if (scheme != "http" && scheme != "https") return false
+
+        val host = uri.host?.lowercase() ?: return false
+
+        // SSRF protection: reject localhost and private IP addresses
+        if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host.endsWith(".local") || host.endsWith(".internal")) {
+            return false
+        }
+        if (host.matches(Regex("^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[0-1])\\.|169\\.254\\.).*"))) {
+            return false
+        }
+
+        // Cache baseHost computation to avoid re-parsing baseUrl inside loops
+        val baseHost = expectedBaseHost ?: if (baseUrl.isNotBlank()) {
+            try { java.net.URI(baseUrl).host?.lowercase()?.removePrefix("www.") } catch (_: Exception) { null }
+        } else null
+
+        if (baseHost != null) {
+            val cleanHost = host.removePrefix("www.")
+            if (cleanHost != baseHost && !cleanHost.endsWith(".$baseHost")) {
+                return false
+            }
+        }
+
+        val path = (uri.path ?: "").lowercase()
+        val query = (uri.query ?: "").lowercase()
+        val fragment = (uri.fragment ?: "").lowercase()
+
+        // Reject comments, profiles, forums, catalog, media, login/auth
+        if (path.contains("/comments/") || path.contains("/comment/") || path.endsWith("/comments") || path.endsWith("/comment") ||
+            fragment.contains("comment") || fragment.contains("disqus") ||
+            query.contains("lastcomments") || query.contains("do=comments") ||
+            path.contains("/user/") || path.contains("/users/") ||
+            path.contains("/profile/") || path.contains("/account/") ||
+            path.contains("/forum/") || path.contains("/catalog/") ||
+            path.contains("/tags/") || path.contains("/genre/") ||
+            path.contains("/search/") || path.contains("/bookmark/") ||
+            path.contains("/login") || path.contains("/register") ||
+            path.contains("/logout")
+        ) {
+            return false
+        }
+
+        // Reject static media files
+        if (path.endsWith(".jpg") || path.endsWith(".jpeg") || path.endsWith(".png") ||
+            path.endsWith(".webp") || path.endsWith(".gif") || path.endsWith(".css") ||
+            path.endsWith(".js") || path.endsWith(".apk") || path.endsWith(".zip")) {
+            return false
+        }
+
+        return true
+    }
+
+    fun extractNovelPathPrefix(url: String): String {
+        return try {
+            val path = java.net.URI(url).path ?: return ""
+            val lastSlash = path.lastIndexOf('/')
+            if (lastSlash > 0) path.substring(0, lastSlash + 1) else ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun matchesNavKeyword(text: String, keywords: List<String>): Boolean {
+        if (text.isBlank()) return false
+        for (kw in keywords) {
+            if (kw.length <= 2) {
+                if (text == kw) return true
+            } else {
+                if (text == kw || text.startsWith("$kw ") || text.endsWith(" $kw") || text.contains(" $kw ")) {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private fun checkBotChallenge(statusCode: Int, body: String, url: String) {
@@ -150,18 +250,12 @@ class NovelScraper {
     }
 
     fun parseDocument(doc: Document, baseUrl: String): ScrapedChapter {
-        // 1. Detect Next / Previous Chapter Navigation Links FIRST before stripping any DOM elements
-        val nextUrl = findNavigationLink(doc, baseUrl, isNext = true)
-        val prevUrl = findNavigationLink(doc, baseUrl, isNext = false)
-
-        // 2. Extract Novel & Chapter Title
-        val chapterTitle = extractChapterTitle(doc)
-        val novelTitle = extractNovelTitle(doc, chapterTitle)
-
-        // 3. Strip comments, social widgets, advertisements universally (preserving content)
+        // 1. Strip comments, sidebars, social widgets, advertisements universally FIRST
         val unwantedSelectors = listOf(
             "#dle-comments-list", ".comments", ".comments-tree", ".comment-list",
-            "#comments", ".ad-block", ".ads", "script", "style", "noscript",
+            "#comments", "aside", "#rightside", ".str_right", ".sidebar",
+            ".sidebar-block", ".recent-comments", ".popular-block", ".top-rated",
+            ".ad-block", ".ads", "script", "style", "noscript",
             ".soc-buttons", ".share-box", ".socials", ".rating", ".comment-form",
             "#disqus_thread", ".disqus", ".fb-comments", ".reactions",
             ".report-chapter", ".author-note-wrapper", ".ad-container",
@@ -170,6 +264,14 @@ class NovelScraper {
         for (selector in unwantedSelectors) {
             doc.select(selector).remove()
         }
+
+        // 2. Detect Next / Previous Chapter Navigation Links from clean document
+        val nextUrl = findNavigationLink(doc, baseUrl, isNext = true)
+        val prevUrl = findNavigationLink(doc, baseUrl, isNext = false)
+
+        // 3. Extract Novel & Chapter Title
+        val chapterTitle = extractChapterTitle(doc)
+        val novelTitle = extractNovelTitle(doc, chapterTitle)
 
         // 4. Extract Main Story Content Container Universally
         val contentElement = doc.selectFirst("#arrticle")
@@ -204,6 +306,17 @@ class NovelScraper {
                 .map { cleanParagraphText(it) }
                 .filter { it.isNotBlank() && !isSpamOrAdLine(it) }
             paragraphs.addAll(lines)
+        }
+
+        // Guard against Ranobes / CMS comments-only placeholders
+        val isCommentsOnly = paragraphs.any { p ->
+            val lower = p.lowercase()
+            lower.contains("this page is for comments only") ||
+            (lower.contains("comments only") && lower.contains("click on the chapter title"))
+        } || (doc.title().contains("Comments", ignoreCase = true) && paragraphs.size <= 4 && paragraphs.any { it.contains("comments only", ignoreCase = true) })
+
+        if (isCommentsOnly) {
+            throw IllegalStateException("Received a comments-only discussion page instead of chapter story text: $baseUrl")
         }
 
         return ScrapedChapter(
@@ -279,70 +392,94 @@ class NovelScraper {
     }
 
     fun findNavigationLink(doc: Document, baseUrl: String, isNext: Boolean): String? {
-        // Check HTML head link elements first
+        val baseHost = try { java.net.URI(baseUrl).host?.lowercase()?.removePrefix("www.") } catch (_: Exception) { null }
+        val novelPrefix = extractNovelPathPrefix(baseUrl)
+
+        // 1. Check HTML head link elements first
         val headLinkRel = if (isNext) "next" else "prev"
         val headLink = doc.selectFirst("link[rel=$headLinkRel]")?.absUrl("href")
-        if (!headLink.isNullOrBlank() && headLink != baseUrl) {
+        if (isValidChapterUrl(headLink, baseUrl, baseHost)) {
             return headLink
         }
 
-        // Check site-specific standard button IDs
-        val buttonId = if (isNext) "#next_url" else "#prev_url"
-        val idLink = doc.selectFirst(buttonId)?.absUrl("href")
-        if (!idLink.isNullOrBlank() && idLink != baseUrl && !idLink.startsWith("javascript")) {
-            return idLink
-        }
-
-        // Check class-specific selectors
-        val classSelectors = if (isNext) {
-            listOf("a.next", "a.ch-next-btn", "a.nav-next", "a.next_page", "a[title*=Next]")
+        // 2. Check site-specific standard button IDs (Ranobes uses #next / #prev)
+        val buttonIds = if (isNext) {
+            listOf("#next", "#next_url", "#nextChapter", "#next_chapter", "#next-chapter", "#next_page", "#btn-next")
         } else {
-            listOf("a.prev", "a.ch-prev-btn", "a.nav-prev", "a.prev_page", "a[title*=Previous]", "a[title*=Prev]")
+            listOf("#prev", "#prev_url", "#prevChapter", "#prev_chapter", "#prev-chapter", "#prev_page", "#btn-prev")
         }
-        for (sel in classSelectors) {
-            val element = doc.selectFirst(sel)
-            val href = element?.absUrl("href")
-            if (!href.isNullOrBlank() && href != baseUrl && !href.startsWith("javascript")) {
+        for (id in buttonIds) {
+            val href = doc.selectFirst(id)?.absUrl("href")
+            if (isValidChapterUrl(href, baseUrl, baseHost)) {
                 return href
             }
         }
 
-        val keywords = if (isNext) {
-            listOf("next chapter", "next", "siguiente", "следующая", "下", ">>", ">")
+        // 3. Check class-specific selectors
+        val classSelectors = if (isNext) {
+            listOf("a.next", "a.ch-next-btn", "a.nav-next", "a.next_page", "a[rel=next]", "a[title='Right button']", "a[title*=Next]")
         } else {
-            listOf("prev chapter", "previous chapter", "previous", "prev", "anterior", "предыдущая", "上", "<<", "<")
+            listOf("a.prev", "a.ch-prev-btn", "a.nav-prev", "a.prev_page", "a[rel=prev]", "a[title='Left button']", "a[title*=Previous]", "a[title*=Prev]")
+        }
+        for (sel in classSelectors) {
+            val href = doc.selectFirst(sel)?.absUrl("href")
+            if (isValidChapterUrl(href, baseUrl, baseHost)) {
+                return href
+            }
         }
 
-        val links = doc.select("a[href]")
-        for (link in links) {
-            val text = link.text().lowercase().trim()
-            val rel = link.attr("rel").lowercase()
+        val exactKeywords = if (isNext) {
+            listOf("next chapter", "next", "siguiente", "следующая", "下", ">>", ">")
+        } else {
+            listOf("prev chapter", "previous chapter", "previous", "prev", "back", "anterior", "предыдущая", "上", "<<", "<")
+        }
 
-            if (rel == (if (isNext) "next" else "prev")) {
+        // 4. Scoped search inside navigation containers
+        val navContainers = listOf(
+            ".chapter-nav", ".navigation", ".read-topbar", ".center[data-nosnippet]",
+            ".nav-links", ".entry-navigation", ".read-nav", ".wp-post-navigation"
+        )
+        for (containerSel in navContainers) {
+            val container = doc.selectFirst(containerSel) ?: continue
+            for (link in container.select("a[href]")) {
+                val text = link.text().trim().lowercase()
+                if (text.length > 25) continue
                 val href = link.absUrl("href")
-                if (href.isNotBlank() && href != baseUrl && !href.startsWith("javascript")) {
+                if (!isValidChapterUrl(href, baseUrl, baseHost)) continue
+
+                if (matchesNavKeyword(text, exactKeywords)) {
                     return href
                 }
             }
+        }
 
-            for (kw in keywords) {
-                val matches = if (kw.length <= 2) {
-                    text == kw // Require exact match for symbols like ">", ">>", "<", "<<" to avoid breadcrumb hijacking
-                } else {
-                    text == kw || text.contains(kw)
+        // 5. Fallback search across remaining anchors (comments and sidebars are already stripped)
+        var fallbackCandidate: String? = null
+        for (link in doc.select("a[href]")) {
+            val text = link.text().trim().lowercase()
+            if (text.length > 25) continue
+
+            // Filter out common non-chapter words
+            if (text.contains("home") || text.contains("index") || text.contains("catalog") ||
+                text.contains("bookmark") || text.contains("comment") || text.contains("report") ||
+                text.contains("download") || text.contains("share") || text.contains("discord")) {
+                continue
+            }
+
+            val href = link.absUrl("href")
+            if (!isValidChapterUrl(href, baseUrl, baseHost)) continue
+
+            if (matchesNavKeyword(text, exactKeywords)) {
+                if (novelPrefix.isNotEmpty() && href.contains(novelPrefix)) {
+                    return href
                 }
-                if (matches) {
-                    // Ignore common non-chapter links like home, index, catalog, bookmark
-                    if (!text.contains("home") && !text.contains("index") && !text.contains("catalog") && !text.contains("bookmark")) {
-                        val href = link.absUrl("href")
-                        if (href.isNotBlank() && href != baseUrl && !href.startsWith("javascript")) {
-                            return href
-                        }
-                    }
+                if (fallbackCandidate == null) {
+                    fallbackCandidate = href
                 }
             }
         }
-        return null
+
+        return fallbackCandidate
     }
 
     companion object {

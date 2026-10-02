@@ -157,5 +157,92 @@ class NovelScraperTest {
         assertEquals(2, chapter.paragraphs.size)
         assertEquals("Paragraph 1 line.", chapter.paragraphs[0])
     }
+
+    @Test
+    fun testRanobesNavigationWithSidebarCommentsDoesNotHijack() {
+        val sampleHtml = """
+            <!DOCTYPE html>
+            <html>
+            <head><title>Chapter 163. New Power | Supreme Magus</title></head>
+            <body>
+                <h1 class="title">Chapter 163. New Power</h1>
+                <div class="navigation center">
+                    <a href="https://ranobes.net/supreme-magus-v812312-218262/320051.html" class="btn btn-icon left dark-btn" title="Left button" id="prev"><i class="fas fa-angle-double-left"></i> Back</a>
+                    <a href="https://ranobes.net/supreme-magus-v812312-218262/320053.html" class="btn btn-icon right dark-btn" title="Right button" id="next">Next <i class="fas fa-angle-double-right"></i></a>
+                </div>
+                <div id="arrticle" class="text">
+                    <p>Lith focused on his mana core, feeling the deep resonance within his soul.</p>
+                    <p>The dark magic surged forward smoothly.</p>
+                </div>
+                <div id="rightside">
+                    <div class="block">
+                        <div class="title">Recent Comments</div>
+                        <div class="comment">
+                            <a href="https://ranobes.net/supreme-magus-v812312-218262/comments/320052/" title="Chapter 245">I can't wait for next chapter to drop!</a>
+                        </div>
+                        <div class="comment">
+                            <a href="https://ranobes.net/shadow-slave-novel/comments/88888/" title="Chapter 500">Next chapter is going to be insane!</a>
+                        </div>
+                    </div>
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val scraper = NovelScraper()
+        val baseUrl = "https://ranobes.net/supreme-magus-v812312-218262/320052.html"
+        val doc = Jsoup.parse(sampleHtml, baseUrl)
+        val chapter = scraper.parseDocument(doc, baseUrl)
+
+        assertEquals("https://ranobes.net/supreme-magus-v812312-218262/320053.html", chapter.nextChapterUrl)
+        assertEquals("https://ranobes.net/supreme-magus-v812312-218262/320051.html", chapter.prevChapterUrl)
+        assertFalse(chapter.nextChapterUrl!!.contains("/comments/"))
+        assertFalse(chapter.nextChapterUrl!!.contains("shadow-slave"))
+        assertEquals("Chapter 163. New Power", chapter.chapterTitle)
+        assertEquals(2, chapter.paragraphs.size)
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun testRejectsCommentsPlaceholderPage() {
+        val sampleHtml = """
+            <!DOCTYPE html>
+            <html>
+            <head><title>Comments | Supreme Magus - Chapter 245</title></head>
+            <body>
+                <h1 class="title">Chapter 245</h1>
+                <div id="arrticle" class="text">
+                    <p>This page is for comments only.</p>
+                    <p>To read the chapter, click on the chapter title or on the link: <a href="https://ranobes.net/supreme-magus-v812312-218262/320100.html">Chapter 245</a></p>
+                    <p>Leave your comments below.</p>
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val scraper = NovelScraper()
+        val doc = Jsoup.parse(sampleHtml, "https://ranobes.net/supreme-magus-v812312-218262/comments/320052/")
+        scraper.parseDocument(doc, "https://ranobes.net/supreme-magus-v812312-218262/comments/320052/")
+    }
+
+    @Test
+    fun testIsValidChapterUrlRules() {
+        val scraper = NovelScraper()
+        val base = "https://ranobes.net/supreme-magus-v812312-218262/320052.html"
+
+        assertTrue(scraper.isValidChapterUrl("https://ranobes.net/supreme-magus-v812312-218262/320053.html", base))
+        // Same URL should be false
+        assertFalse(scraper.isValidChapterUrl(base, base))
+        // Comments URLs
+        assertFalse(scraper.isValidChapterUrl("https://ranobes.net/supreme-magus-v812312-218262/comments/320052/", base))
+        assertFalse(scraper.isValidChapterUrl("https://ranobes.net/comments/320052/", base))
+        assertFalse(scraper.isValidChapterUrl("https://ranobes.net/supreme-magus-v812312-218262/320053.html#comments", base))
+        // Cross-domain navigation
+        assertFalse(scraper.isValidChapterUrl("https://other-domain.com/chapter-2", base))
+        // Javascript or empty
+        assertFalse(scraper.isValidChapterUrl("javascript:void(0)", base))
+        assertFalse(scraper.isValidChapterUrl("#", base))
+        assertFalse(scraper.isValidChapterUrl("", base))
+    }
 }
+
 
