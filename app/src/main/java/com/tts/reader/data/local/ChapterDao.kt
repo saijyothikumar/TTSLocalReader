@@ -33,6 +33,15 @@ interface ChapterDao {
     @Query("DELETE FROM chapters")
     suspend fun clearAllChapters()
 
+    @Query("SELECT * FROM chapters WHERE novelId = :novelId ORDER BY chapterNumber ASC, cachedAtTimestamp ASC")
+    fun getChaptersForNovel(novelId: String): Flow<List<ChapterEntity>>
+
+    @Query("DELETE FROM chapters WHERE novelId = :novelId")
+    suspend fun deleteChaptersForNovel(novelId: String)
+
+    @Query("SELECT COUNT(*) FROM chapters WHERE novelId = :novelId")
+    suspend fun getChapterCountForNovel(novelId: String): Int
+
     @Query("SELECT COUNT(*) FROM chapters")
     suspend fun getCachedChapterCount(): Int
 }

@@ -79,8 +79,15 @@ A lightweight, offline-first Text-to-Speech (TTS) application targeting Android 
   - Supports Continuous (Timer Off), Loop Current Chapter Once, and Play $N$ Chapters before sleep.
   - Dynamic mode switching: If set to Play 3 chapters, and switched to Loop on chapter 2, it loops chapter 2 once and enters sleep.
   - `enterSleep()` teardown: Completely stops audio pipeline, stops Foreground Service, dismisses notification, releases partial wake-locks, and abandons audio focus, allowing Android OS to enter deep sleep without battery drain.
-- **Novel Categorization & Folder Storage (`NovelIdentifier`)**:
-  - Scraped chapters from multiple sources and mirrors are normalized by stripping site suffixes (`- Ranobes`, `- Light Novel Pub`, etc.) and extracting canonical novel keys.
-  - Storage dialog and library group chapters into collapsible novel folder cards with folder-level deletion and chapter-level deletion, protected by confirmation dialogs.
-  - 1-tap chapter URL copy with 3.5s auto-dismissing info banner.
+- **Novel-First Architecture & Canonical Mirror Classification (`NovelEntity` & `NovelClassifier`)**:
+  - *Root Cause & Prior Defect*: Chapters were previously saved into a flat Room table keyed solely by chapter URL with no first-class parent Novel concept. Grouping was attempted retroactively via in-memory string splitting on chapter titles, failing when mirror sites omitted novel names or used varying formats.
+  - *Architecture & Verified Pattern*:
+    1. First-class `NovelEntity` Room table (`id`, `title`, `coverUrl`, `lastReadUrl`, `lastReadChapterTitle`, `lastReadSentenceIndex`, `totalChapters`, `lastReadTimestamp`, `createdAt`).
+    2. `ChapterEntity` foreign-linked with `novelId: String` (indexed) and `chapterNumber: Float` for chronological sorting.
+    3. `NovelClassifier` normalizes novel titles across different mirror sites into canonical slugs (e.g., `"Shadow Slave - Ranobes"`, `"Shadow Slave | FreeWebNovel"` -> `"shadow-slave"`), stripping mirror chrome, site watermarks, and author tags.
+    4. Numeric float parsing of chapter sequences (`"Chapter 105.5"` -> `105.5f`) ensures true chronological ordering in database queries (`ORDER BY chapterNumber ASC, cachedAtTimestamp ASC`).
+    5. Replaced redundant dual dialogs (`SavedChaptersDialog` and `ChapterLibrarySheet`) with a unified Obsidian Amber `NovelBookshelfSheet`:
+       - *Level 1 (Bookshelf)*: Shows all saved novels with total chapter counts, last read chapter, 1-tap "Resume Reading", "Chapters" drill-down, and novel deletion protected by confirmation dialogs.
+       - *Level 2 (Chapters Directory)*: Shows all chapters of the selected novel sorted chronologically, active playback indicator, 1-tap play, chapter URL copy, and single chapter deletion.
+       - Clean TopAppBar: Replaced redundant folder button with direct Bookshelf menu icon.
 

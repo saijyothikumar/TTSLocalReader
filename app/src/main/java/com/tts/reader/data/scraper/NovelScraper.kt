@@ -11,8 +11,10 @@ import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
 data class ScrapedChapter(
+    val novelId: String = "",
     val novelTitle: String,
     val chapterTitle: String,
+    val chapterNumber: Float = 0f,
     val paragraphs: List<String>,
     val nextChapterUrl: String? = null,
     val prevChapterUrl: String? = null
@@ -43,7 +45,12 @@ class NovelScraper {
         }
         .build()
 
-    suspend fun scrape(url: String, referer: String? = null): Result<ScrapedChapter> = withContext(Dispatchers.IO) {
+    suspend fun scrape(
+        url: String,
+        referer: String? = null,
+        activeNovelId: String? = null,
+        activeNovelTitle: String? = null
+    ): Result<ScrapedChapter> = withContext(Dispatchers.IO) {
         try {
             validatePublicUrl(url)
 
@@ -81,7 +88,7 @@ class NovelScraper {
             }
 
             val doc = Jsoup.parse(bodyString, url)
-            val scraped = parseDocument(doc, url)
+            val scraped = parseDocument(doc, url, activeNovelId, activeNovelTitle)
             Result.success(scraped)
         } catch (e: Exception) {
             Result.failure(e)
@@ -243,19 +250,40 @@ class NovelScraper {
         }
     }
 
-    fun parseRawText(title: String, text: String): ScrapedChapter {
+    fun parseRawText(
+        title: String,
+        text: String,
+        activeNovelId: String? = null,
+        activeNovelTitle: String? = null
+    ): ScrapedChapter {
         val rawParagraphs = text.split("\n\n", "\r\n\r\n", "\n")
             .map { it.trim() }
             .filter { it.isNotEmpty() }
 
-        return ScrapedChapter(
-            novelTitle = "",
+        val classification = NovelClassifier.classify(
+            scrapedNovelTitle = activeNovelTitle ?: "",
+            pageTitle = "",
             chapterTitle = title.ifBlank { "Pasted Chapter" },
+            url = "local_paste_${System.currentTimeMillis()}",
+            activeNovelId = activeNovelId,
+            activeNovelTitle = activeNovelTitle
+        )
+
+        return ScrapedChapter(
+            novelId = classification.novelId,
+            novelTitle = classification.novelTitle,
+            chapterTitle = classification.cleanChapterTitle,
+            chapterNumber = classification.chapterNumber,
             paragraphs = if (rawParagraphs.isEmpty()) listOf("No content provided.") else rawParagraphs
         )
     }
 
-    fun parseDocument(doc: Document, baseUrl: String): ScrapedChapter {
+    fun parseDocument(
+        doc: Document,
+        baseUrl: String,
+        activeNovelId: String? = null,
+        activeNovelTitle: String? = null
+    ): ScrapedChapter {
         // 1. Strip comments, sidebars, social widgets, scripts, iframes, advertisements universally FIRST
         val unwantedSelectors = listOf(
             "#dle-comments-list", ".comments", ".comments-tree", ".comment-list",
@@ -276,9 +304,17 @@ class NovelScraper {
         val nextUrl = findNavigationLink(doc, baseUrl, isNext = true)
         val prevUrl = findNavigationLink(doc, baseUrl, isNext = false)
 
-        // 3. Extract Novel & Chapter Title
-        val chapterTitle = extractChapterTitle(doc)
-        val novelTitle = extractNovelTitle(doc, chapterTitle)
+        // 3. Extract Novel & Chapter Title using NovelClassifier
+        val rawChapterTitle = extractChapterTitle(doc)
+        val rawNovelTitle = extractNovelTitle(doc, rawChapterTitle)
+        val classification = NovelClassifier.classify(
+            scrapedNovelTitle = rawNovelTitle,
+            pageTitle = doc.title(),
+            chapterTitle = rawChapterTitle,
+            url = baseUrl,
+            activeNovelId = activeNovelId,
+            activeNovelTitle = activeNovelTitle
+        )
 
         // 4. Extract Main Story Content Container Universally
         val contentElement = doc.selectFirst("#arrticle")
@@ -336,8 +372,10 @@ class NovelScraper {
         }
 
         return ScrapedChapter(
-            novelTitle = novelTitle,
-            chapterTitle = chapterTitle,
+            novelId = classification.novelId,
+            novelTitle = classification.novelTitle,
+            chapterTitle = classification.cleanChapterTitle,
+            chapterNumber = classification.chapterNumber,
             paragraphs = if (paragraphs.isEmpty()) listOf("No readable text found in this chapter.") else paragraphs,
             nextChapterUrl = nextUrl,
             prevChapterUrl = prevUrl

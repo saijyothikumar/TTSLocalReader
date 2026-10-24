@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -35,16 +36,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tts.reader.data.local.ChapterEntity
-import com.tts.reader.data.scraper.NovelIdentifier
+import com.tts.reader.data.local.NovelEntity
 import com.tts.reader.data.scraper.TextSanitizer
 import com.tts.reader.ui.theme.*
 import com.tts.reader.ui.viewmodel.ReaderViewModel
 import com.tts.reader.ui.viewmodel.SleepMode
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
 sealed class DeleteTarget {
     data class SingleChapter(val chapter: ChapterEntity) : DeleteTarget()
-    data class NovelFolder(val novelTitle: String, val urls: List<String>) : DeleteTarget()
+    data class EntireNovel(val novel: NovelEntity) : DeleteTarget()
     data class SelectedChapters(val urls: List<String>) : DeleteTarget()
     object ClearAll : DeleteTarget()
 }
@@ -62,9 +64,8 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
 
     var inputUrl by remember { mutableStateOf("") }
     var rawTextDialogVisible by remember { mutableStateOf(false) }
-    var cacheDialogVisible by remember { mutableStateOf(false) }
+    var novelBookshelfVisible by remember { mutableStateOf(false) }
     var voiceSettingsVisible by remember { mutableStateOf(false) }
-    var chapterLibraryVisible by remember { mutableStateOf(false) }
     var openUrlDialogVisible by remember { mutableStateOf(false) }
     var chapterInfoDialogVisible by remember { mutableStateOf(false) }
     var sleepSheetVisible by remember { mutableStateOf(false) }
@@ -101,10 +102,10 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                     titleContentColor = TextPrimary
                 ),
                 navigationIcon = {
-                    IconButton(onClick = { chapterLibraryVisible = true }) {
+                    IconButton(onClick = { novelBookshelfVisible = true }) {
                         Icon(
-                            imageVector = Icons.Default.Menu,
-                            contentDescription = "Chapter Library",
+                            imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                            contentDescription = "Novel Bookshelf",
                             tint = AmberPrimary
                         )
                     }
@@ -164,14 +165,6 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                         Icon(
                             imageVector = Icons.Default.Tune,
                             contentDescription = "Voice Engine Settings",
-                            tint = AmberPrimary
-                        )
-                    }
-
-                    IconButton(onClick = { cacheDialogVisible = true }) {
-                        Icon(
-                            imageVector = Icons.Default.Folder,
-                            contentDescription = "Saved Chapters Storage",
                             tint = AmberPrimary
                         )
                     }
@@ -518,18 +511,37 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
         )
     }
 
-    // Chapter Library Navigation Drawer / Sheet (Grouped by Novel Folder)
-    if (chapterLibraryVisible) {
-        ChapterLibrarySheet(
-            cachedChapters = uiState.cachedChapters,
+    // Novel Bookshelf Navigation Sheet
+    if (novelBookshelfVisible) {
+        NovelBookshelfSheet(
+            allNovels = uiState.allNovels,
+            currentNovelId = uiState.currentNovelId,
             currentUrl = uiState.currentUrl,
-            onSelectChapter = { viewModel.selectChapter(it) },
-            onOpenManageCache = { cacheDialogVisible = true },
+            onResumeNovel = { novelId ->
+                viewModel.resumeNovel(novelId)
+                novelBookshelfVisible = false
+            },
+            onSelectChapter = { url ->
+                viewModel.selectChapter(url)
+                novelBookshelfVisible = false
+            },
             onCopyUrl = { url ->
                 clipboardManager.setText(AnnotatedString(url))
                 viewModel.showTemporaryInfo("Chapter URL copied to clipboard.")
             },
-            onDismiss = { chapterLibraryVisible = false }
+            onRequestDeleteNovel = { novel ->
+                pendingDelete = DeleteTarget.EntireNovel(novel)
+            },
+            onRequestDeleteChapter = { chapter ->
+                pendingDelete = DeleteTarget.SingleChapter(chapter)
+            },
+            onRequestClearAll = {
+                pendingDelete = DeleteTarget.ClearAll
+            },
+            getChaptersFlow = { novelId ->
+                viewModel.getChaptersForNovel(novelId)
+            },
+            onDismiss = { novelBookshelfVisible = false }
         )
     }
 
@@ -625,43 +637,14 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
         )
     }
 
-    // Saved Chapters Storage Management Dialog (Categorized by Novel Folders)
-    if (cacheDialogVisible) {
-        SavedChaptersDialog(
-            cachedChapters = uiState.cachedChapters,
-            currentUrl = uiState.currentUrl,
-            onSelectChapter = { url ->
-                viewModel.loadUrl(url)
-                cacheDialogVisible = false
-            },
-            onCopyUrl = { url ->
-                clipboardManager.setText(AnnotatedString(url))
-                viewModel.showTemporaryInfo("Chapter URL copied to clipboard.")
-            },
-            onRequestDeleteSingle = { chapter ->
-                pendingDelete = DeleteTarget.SingleChapter(chapter)
-            },
-            onRequestDeleteFolder = { novelTitle, urls ->
-                pendingDelete = DeleteTarget.NovelFolder(novelTitle, urls)
-            },
-            onRequestDeleteSelected = { urls ->
-                pendingDelete = DeleteTarget.SelectedChapters(urls)
-            },
-            onRequestClearAll = {
-                pendingDelete = DeleteTarget.ClearAll
-            },
-            onDismiss = { cacheDialogVisible = false }
-        )
-    }
-
-    // Confirmation Popups for Deletion (Single Chapter, Novel Folder, Multi-select, or Clear All)
+    // Confirmation Popups for Deletion (Single Chapter, Entire Novel, Multi-select, or Clear All)
     pendingDelete?.let { target ->
         DeleteConfirmationDialog(
             target = target,
             onConfirm = {
                 when (target) {
                     is DeleteTarget.SingleChapter -> viewModel.deleteChapter(target.chapter.url)
-                    is DeleteTarget.NovelFolder -> viewModel.deleteNovelFolder(target.novelTitle, target.urls)
+                    is DeleteTarget.EntireNovel -> viewModel.deleteNovel(target.novel.id)
                     is DeleteTarget.SelectedChapters -> viewModel.deleteChapters(target.urls)
                     is DeleteTarget.ClearAll -> viewModel.clearAllCachedChapters()
                 }
@@ -681,12 +664,12 @@ fun DeleteConfirmationDialog(
     val (title, message) = when (target) {
         is DeleteTarget.SingleChapter ->
             "Delete Chapter" to "Are you sure you want to remove \"${target.chapter.chapterTitle.ifBlank { "this chapter" }}\" from offline saved storage?"
-        is DeleteTarget.NovelFolder ->
-            "Delete Novel Folder" to "Are you sure you want to delete all ${target.urls.size} saved chapters of \"${target.novelTitle}\"?"
+        is DeleteTarget.EntireNovel ->
+            "Delete Novel" to "Are you sure you want to delete \"${target.novel.title}\" and all of its ${target.novel.totalChapters} saved chapters?"
         is DeleteTarget.SelectedChapters ->
             "Delete Selected Chapters" to "Are you sure you want to delete ${target.urls.size} selected chapter(s) from storage?"
         is DeleteTarget.ClearAll ->
-            "Clear All Saved Chapters" to "Are you sure you want to delete all saved chapters from offline storage? This action cannot be undone."
+            "Clear All Saved Novels" to "Are you sure you want to delete all saved novels and chapters from offline storage? This action cannot be undone."
     }
 
     AlertDialog(
@@ -901,343 +884,24 @@ fun ChapterInfoDialog(
     )
 }
 
-@Composable
-fun SavedChaptersDialog(
-    cachedChapters: List<ChapterEntity>,
-    currentUrl: String,
-    onSelectChapter: (String) -> Unit,
-    onCopyUrl: (String) -> Unit,
-    onRequestDeleteSingle: (ChapterEntity) -> Unit,
-    onRequestDeleteFolder: (String, List<String>) -> Unit,
-    onRequestDeleteSelected: (List<String>) -> Unit,
-    onRequestClearAll: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    var selectedUrls by remember { mutableStateOf(setOf<String>()) }
-    var expandedNovels by remember { mutableStateOf(setOf<String>()) }
-    val novelGroups = remember(cachedChapters) { NovelIdentifier.groupChaptersByNovel(cachedChapters) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = ObsidianSurface,
-        title = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Folder,
-                        contentDescription = null,
-                        tint = AmberPrimary,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Saved Chapters", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                }
-                Text(
-                    text = "${cachedChapters.size} saved",
-                    color = AmberPrimary,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-        },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                if (cachedChapters.isNotEmpty()) {
-                    // Action & Multi-Selection Toolbar
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(ObsidianSurfaceVariant, RoundedCornerShape(8.dp))
-                            .padding(horizontal = 6.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val allSelected = selectedUrls.size == cachedChapters.size && cachedChapters.isNotEmpty()
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.clickable {
-                                selectedUrls = if (allSelected) emptySet() else cachedChapters.map { it.url }.toSet()
-                            }
-                        ) {
-                            Checkbox(
-                                checked = allSelected,
-                                onCheckedChange = { checked ->
-                                    selectedUrls = if (checked) cachedChapters.map { it.url }.toSet() else emptySet()
-                                },
-                                colors = CheckboxDefaults.colors(
-                                    checkedColor = AmberPrimary,
-                                    uncheckedColor = TextSecondary,
-                                    checkmarkColor = ObsidianBackground
-                                )
-                            )
-                            Text("All", color = TextPrimary, fontSize = 12.sp)
-                        }
-
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (selectedUrls.isNotEmpty()) {
-                                Button(
-                                    onClick = { onRequestDeleteSelected(selectedUrls.toList()) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = StatusError),
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                    shape = RoundedCornerShape(6.dp),
-                                    modifier = Modifier.height(30.dp)
-                                ) {
-                                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Delete (${selectedUrls.size})", fontSize = 11.sp)
-                                }
-                                Spacer(modifier = Modifier.width(6.dp))
-                            }
-
-                            TextButton(
-                                onClick = onRequestClearAll,
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                            ) {
-                                Text("Clear All", color = StatusError, fontSize = 11.sp)
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Categorized Novel Folders
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 320.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        novelGroups.forEach { (novelKey, chapters) ->
-                            val cleanTitle = NovelIdentifier.normalizeNovelTitle(chapters.firstOrNull()?.novelTitle ?: novelKey)
-                            val isExpanded = expandedNovels.contains(novelKey) || novelGroups.size == 1
-
-                            item(key = "novel_$novelKey") {
-                                Surface(
-                                    color = ObsidianSurfaceVariant.copy(alpha = 0.5f),
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.fillMaxWidth()) {
-                                        // Folder Header
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable {
-                                                    expandedNovels = if (isExpanded) {
-                                                        expandedNovels - novelKey
-                                                    } else {
-                                                        expandedNovels + novelKey
-                                                    }
-                                                }
-                                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Icon(
-                                                    imageVector = if (isExpanded) Icons.Default.FolderOpen else Icons.Default.Folder,
-                                                    contentDescription = null,
-                                                    tint = AmberPrimary,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Text(
-                                                    text = cleanTitle,
-                                                    color = AmberPrimary,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 13.sp,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    modifier = Modifier.weight(1f, fill = false)
-                                                )
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Surface(
-                                                    color = AmberGlow,
-                                                    shape = RoundedCornerShape(10.dp)
-                                                ) {
-                                                    Text(
-                                                        text = "${chapters.size} ch",
-                                                        color = TextPrimary,
-                                                        fontSize = 10.sp,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                    )
-                                                }
-                                            }
-
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                IconButton(
-                                                    onClick = { onRequestDeleteFolder(cleanTitle, chapters.map { it.url }) },
-                                                    modifier = Modifier.size(28.dp)
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.DeleteOutline,
-                                                        contentDescription = "Delete Novel Folder",
-                                                        tint = StatusError.copy(alpha = 0.8f),
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                }
-                                                Icon(
-                                                    imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                                    contentDescription = null,
-                                                    tint = TextSecondary,
-                                                    modifier = Modifier.size(20.dp)
-                                                )
-                                            }
-                                        }
-
-                                        // Expanded Chapter List inside this folder
-                                        if (isExpanded) {
-                                            Column(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                                                verticalArrangement = Arrangement.spacedBy(3.dp)
-                                            ) {
-                                                chapters.forEach { chapter ->
-                                                    val isChecked = selectedUrls.contains(chapter.url)
-                                                    val isCurrent = chapter.url == currentUrl
-
-                                                    Surface(
-                                                        color = if (isCurrent) AmberGlow.copy(alpha = 0.2f) else ObsidianSurface.copy(alpha = 0.6f),
-                                                        shape = RoundedCornerShape(6.dp),
-                                                        modifier = Modifier.fillMaxWidth()
-                                                    ) {
-                                                        Row(
-                                                            modifier = Modifier
-                                                                .fillMaxWidth()
-                                                                .padding(horizontal = 6.dp, vertical = 5.dp),
-                                                            verticalAlignment = Alignment.CenterVertically
-                                                        ) {
-                                                            Checkbox(
-                                                                checked = isChecked,
-                                                                onCheckedChange = { checked ->
-                                                                    selectedUrls = if (checked) {
-                                                                        selectedUrls + chapter.url
-                                                                    } else {
-                                                                        selectedUrls - chapter.url
-                                                                    }
-                                                                },
-                                                                colors = CheckboxDefaults.colors(
-                                                                    checkedColor = AmberPrimary,
-                                                                    uncheckedColor = TextSecondary,
-                                                                    checkmarkColor = ObsidianBackground
-                                                                ),
-                                                                modifier = Modifier.size(22.dp)
-                                                            )
-                                                            Spacer(modifier = Modifier.width(6.dp))
-                                                            Column(
-                                                                modifier = Modifier
-                                                                    .weight(1f)
-                                                                    .clickable {
-                                                                        if (!isCurrent) {
-                                                                            onSelectChapter(chapter.url)
-                                                                        }
-                                                                    }
-                                                            ) {
-                                                                Text(
-                                                                    text = chapter.chapterTitle.ifBlank { "Untitled Chapter" },
-                                                                    color = if (isCurrent) AmberPrimary else TextPrimary,
-                                                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
-                                                                    fontSize = 12.sp,
-                                                                    maxLines = 1,
-                                                                    overflow = TextOverflow.Ellipsis
-                                                                )
-                                                                Text(
-                                                                    text = "Sentence ${chapter.lastSentenceIndex + 1} • ${chapter.paragraphs.size} pars",
-                                                                    color = TextSecondary,
-                                                                    fontSize = 10.sp
-                                                                )
-                                                            }
-
-                                                            // Copy URL Button
-                                                            IconButton(
-                                                                onClick = { onCopyUrl(chapter.url) },
-                                                                modifier = Modifier.size(26.dp)
-                                                            ) {
-                                                                Icon(
-                                                                    imageVector = Icons.Default.ContentCopy,
-                                                                    contentDescription = "Copy URL",
-                                                                    tint = TextSecondary,
-                                                                    modifier = Modifier.size(14.dp)
-                                                                )
-                                                            }
-
-                                                            // Delete Chapter Button
-                                                            IconButton(
-                                                                onClick = { onRequestDeleteSingle(chapter) },
-                                                                modifier = Modifier.size(26.dp)
-                                                            ) {
-                                                                Icon(
-                                                                    imageVector = Icons.Default.Close,
-                                                                    contentDescription = "Delete Chapter",
-                                                                    tint = TextSecondary,
-                                                                    modifier = Modifier.size(15.dp)
-                                                                )
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 24.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("No chapters currently stored in offline cache.", color = TextMuted, fontSize = 12.sp)
-                    }
-                }
-            }
-        },
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close", color = TextSecondary)
-            }
-        }
-    )
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChapterLibrarySheet(
-    cachedChapters: List<ChapterEntity>,
+fun NovelBookshelfSheet(
+    allNovels: List<NovelEntity>,
+    currentNovelId: String,
     currentUrl: String,
+    onResumeNovel: (String) -> Unit,
     onSelectChapter: (String) -> Unit,
-    onOpenManageCache: () -> Unit,
     onCopyUrl: (String) -> Unit,
+    onRequestDeleteNovel: (NovelEntity) -> Unit,
+    onRequestDeleteChapter: (ChapterEntity) -> Unit,
+    onRequestClearAll: () -> Unit,
+    getChaptersFlow: (String) -> Flow<List<ChapterEntity>>,
     onDismiss: () -> Unit
 ) {
-    var searchQuery by remember { mutableStateOf("") }
-    val filteredChapters = remember(searchQuery, cachedChapters) {
-        if (searchQuery.isBlank()) {
-            cachedChapters
-        } else {
-            cachedChapters.filter {
-                it.chapterTitle.contains(searchQuery, ignoreCase = true) ||
-                it.novelTitle.contains(searchQuery, ignoreCase = true)
-            }
-        }
-    }
-
-    val groupedNovels = remember(filteredChapters) {
-        NovelIdentifier.groupChaptersByNovel(filteredChapters)
-    }
+    var selectedNovel by remember { mutableStateOf<NovelEntity?>(null) }
+    var novelSearchQuery by remember { mutableStateOf("") }
+    var chapterSearchQuery by remember { mutableStateOf("") }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1249,110 +913,394 @@ fun ChapterLibrarySheet(
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 8.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.MenuBook,
-                        contentDescription = null,
-                        tint = AmberPrimary,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Chapter Library (${cachedChapters.size})",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = TextPrimary
-                    )
-                }
-
-                TextButton(
-                    onClick = {
-                        onDismiss()
-                        onOpenManageCache()
-                    }
+            val activeNovel = selectedNovel
+            if (activeNovel == null) {
+                // LEVEL 1: Novel Bookshelf Overview
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Folder,
-                        contentDescription = null,
-                        tint = AmberPrimary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Manage", color = AmberPrimary, fontSize = 12.sp)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = { Text("Filter chapters or novels...", color = TextMuted, fontSize = 12.sp) },
-                leadingIcon = {
-                    Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(18.dp))
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotBlank()) {
-                        IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(20.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                },
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = TextPrimary,
-                    unfocusedTextColor = TextPrimary,
-                    focusedBorderColor = AmberPrimary,
-                    unfocusedBorderColor = ObsidianSurfaceVariant
-                ),
-                shape = RoundedCornerShape(10.dp),
-                singleLine = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            if (filteredChapters.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(180.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (searchQuery.isNotBlank()) "No matching chapters found." else "No chapters currently saved in cache.\nLoad any chapter to save it here for offline reading.",
-                        color = TextMuted,
-                        fontSize = 12.sp,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 350.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    groupedNovels.forEach { (novelKey, chapters) ->
-                        val cleanNovelTitle = NovelIdentifier.normalizeNovelTitle(chapters.firstOrNull()?.novelTitle ?: novelKey)
-
-                        item(key = "lib_$novelKey") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                            contentDescription = null,
+                            tint = AmberPrimary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Novel Bookshelf",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = TextPrimary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            color = AmberGlow,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
                             Text(
-                                text = cleanNovelTitle.uppercase(),
-                                color = AmberPrimary,
+                                text = "${allNovels.size} novels",
+                                color = TextPrimary,
                                 fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.sp,
-                                modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                             )
                         }
+                    }
 
-                        itemsIndexed(chapters, key = { _, ch -> ch.url }) { _, chapter ->
+                    if (allNovels.isNotEmpty()) {
+                        TextButton(
+                            onClick = onRequestClearAll,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text("Clear All", color = StatusError, fontSize = 12.sp)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                OutlinedTextField(
+                    value = novelSearchQuery,
+                    onValueChange = { novelSearchQuery = it },
+                    placeholder = { Text("Search novels by title...", color = TextMuted, fontSize = 12.sp) },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(18.dp))
+                    },
+                    trailingIcon = {
+                        if (novelSearchQuery.isNotBlank()) {
+                            IconButton(onClick = { novelSearchQuery = "" }, modifier = Modifier.size(20.dp)) {
+                                Icon(Icons.Default.Close, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary,
+                        focusedBorderColor = AmberPrimary,
+                        unfocusedBorderColor = ObsidianSurfaceVariant
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                val filteredNovels = remember(novelSearchQuery, allNovels) {
+                    if (novelSearchQuery.isBlank()) allNovels
+                    else allNovels.filter { it.title.contains(novelSearchQuery, ignoreCase = true) }
+                }
+
+                if (allNovels.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                                contentDescription = null,
+                                tint = AmberPrimary.copy(alpha = 0.4f),
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = "Your bookshelf is empty.",
+                                color = TextPrimary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Load any chapter URL or paste story text to start your library.",
+                                color = TextMuted,
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                } else if (filteredNovels.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(140.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("No novels match \"$novelSearchQuery\"", color = TextMuted, fontSize = 12.sp)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 420.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(filteredNovels, key = { it.id }) { novel ->
+                            val isCurrent = novel.id == currentNovelId
+                            Surface(
+                                color = if (isCurrent) AmberGlow.copy(alpha = 0.2f) else ObsidianSurfaceVariant.copy(alpha = 0.6f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(
+                                    width = if (isCurrent) 1.5.dp else 0.5.dp,
+                                    color = if (isCurrent) AmberPrimary else ObsidianSurfaceVariant
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(14.dp)
+                                ) {
+                                    // Title and Delete Row
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                                                contentDescription = null,
+                                                tint = AmberPrimary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = novel.title,
+                                                color = TextPrimary,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 15.sp,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+
+                                        IconButton(
+                                            onClick = { onRequestDeleteNovel(novel) },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.DeleteOutline,
+                                                contentDescription = "Delete Novel",
+                                                tint = StatusError.copy(alpha = 0.8f),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    // Progress & Chapter Count Row
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Surface(
+                                            color = ObsidianSurface,
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "${novel.totalChapters} saved chapters",
+                                                color = AmberPrimary,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                            )
+                                        }
+
+                                        if (!novel.lastReadChapterTitle.isNullOrBlank()) {
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "Last: ${novel.lastReadChapterTitle}",
+                                                color = TextSecondary,
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    // Action Buttons Row (Resume & Browse Chapters)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        if (!novel.lastReadUrl.isNullOrBlank()) {
+                                            Button(
+                                                onClick = { onResumeNovel(novel.id) },
+                                                colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
+                                                shape = RoundedCornerShape(8.dp),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .height(36.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.PlayArrow,
+                                                    contentDescription = null,
+                                                    tint = ObsidianBackground,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = if (isCurrent) "Continue" else "Resume",
+                                                    color = ObsidianBackground,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 12.sp
+                                                )
+                                            }
+                                        }
+
+                                        OutlinedButton(
+                                            onClick = {
+                                                selectedNovel = novel
+                                                chapterSearchQuery = ""
+                                            },
+                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = AmberPrimary),
+                                            border = BorderStroke(1.dp, AmberPrimary.copy(alpha = 0.5f)),
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(36.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.AutoMirrored.Filled.List,
+                                                contentDescription = null,
+                                                tint = AmberPrimary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "Chapters",
+                                                color = AmberPrimary,
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 12.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // LEVEL 2: Chapter Directory for Selected Novel
+                val chaptersFlow = remember(activeNovel.id) { getChaptersFlow(activeNovel.id) }
+                val chapters by chaptersFlow.collectAsState(initial = emptyList())
+
+                val filteredChapters = remember(chapterSearchQuery, chapters) {
+                    if (chapterSearchQuery.isBlank()) chapters
+                    else chapters.filter { it.chapterTitle.contains(chapterSearchQuery, ignoreCase = true) }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = { selectedNovel = null; chapterSearchQuery = "" },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to Novels",
+                            tint = AmberPrimary
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = activeNovel.title,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${chapters.size} saved chapters",
+                            color = AmberPrimary,
+                            fontSize = 11.sp
+                        )
+                    }
+                    IconButton(
+                        onClick = { onRequestDeleteNovel(activeNovel) },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteOutline,
+                            contentDescription = "Delete Novel",
+                            tint = StatusError.copy(alpha = 0.8f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                OutlinedTextField(
+                    value = chapterSearchQuery,
+                    onValueChange = { chapterSearchQuery = it },
+                    placeholder = { Text("Filter chapters in ${activeNovel.title}...", color = TextMuted, fontSize = 12.sp) },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(18.dp))
+                    },
+                    trailingIcon = {
+                        if (chapterSearchQuery.isNotBlank()) {
+                            IconButton(onClick = { chapterSearchQuery = "" }, modifier = Modifier.size(20.dp)) {
+                                Icon(Icons.Default.Close, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary,
+                        focusedBorderColor = AmberPrimary,
+                        unfocusedBorderColor = ObsidianSurfaceVariant
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                if (filteredChapters.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(140.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (chapterSearchQuery.isNotBlank()) "No matching chapters found." else "No chapters stored for this novel.",
+                            color = TextMuted,
+                            fontSize = 12.sp
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 380.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(filteredChapters, key = { it.url }) { chapter ->
                             val isCurrent = chapter.url == currentUrl
                             Surface(
                                 color = if (isCurrent) AmberGlow.copy(alpha = 0.25f) else ObsidianSurfaceVariant.copy(alpha = 0.5f),
@@ -1363,15 +1311,12 @@ fun ChapterLibrarySheet(
                                 ),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
-                                        onSelectChapter(chapter.url)
-                                        onDismiss()
-                                    }
+                                    .clickable { onSelectChapter(chapter.url) }
                             ) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                        .padding(horizontal = 12.dp, vertical = 9.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
@@ -1384,13 +1329,15 @@ fun ChapterLibrarySheet(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Spacer(modifier = Modifier.height(2.dp))
+                                        val sentenceProgress = if (chapter.lastSentenceIndex > 0) "Sentence ${chapter.lastSentenceIndex + 1} • " else ""
                                         Text(
-                                            text = "${chapter.paragraphs.size} paragraphs • Last at Sentence ${chapter.lastSentenceIndex + 1}",
+                                            text = "$sentenceProgress${chapter.paragraphs.size} paragraphs",
                                             color = TextSecondary,
                                             fontSize = 10.sp
                                         )
                                     }
 
+                                    // Copy URL Button
                                     IconButton(
                                         onClick = { onCopyUrl(chapter.url) },
                                         modifier = Modifier.size(28.dp)
@@ -1403,18 +1350,31 @@ fun ChapterLibrarySheet(
                                         )
                                     }
 
+                                    // Delete Single Chapter Button
+                                    IconButton(
+                                        onClick = { onRequestDeleteChapter(chapter) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Delete Chapter",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+
                                     if (isCurrent) {
                                         Surface(
                                             color = AmberPrimary,
                                             shape = RoundedCornerShape(12.dp),
-                                            modifier = Modifier.padding(start = 6.dp)
+                                            modifier = Modifier.padding(start = 4.dp)
                                         ) {
                                             Text(
                                                 text = "Playing",
                                                 color = ObsidianBackground,
                                                 fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                                             )
                                         }
                                     } else {
@@ -1424,7 +1384,7 @@ fun ChapterLibrarySheet(
                                             tint = TextSecondary,
                                             modifier = Modifier
                                                 .size(20.dp)
-                                                .padding(start = 6.dp)
+                                                .padding(start = 4.dp)
                                         )
                                     }
                                 }
@@ -1434,7 +1394,7 @@ fun ChapterLibrarySheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             Button(
                 onClick = onDismiss,

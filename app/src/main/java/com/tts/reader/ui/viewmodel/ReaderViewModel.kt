@@ -6,7 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.tts.reader.TTSApp
 import com.tts.reader.data.local.AppDatabase
 import com.tts.reader.data.local.ChapterEntity
+import com.tts.reader.data.local.NovelEntity
 import com.tts.reader.data.scraper.CaptchaChallengeException
+import com.tts.reader.data.scraper.NovelClassifier
 import com.tts.reader.data.scraper.NovelScraper
 import com.tts.reader.data.scraper.TextSanitizer
 import com.tts.reader.service.PlaybackService
@@ -43,6 +45,8 @@ data class ReaderUiState(
     val speechClarityMode: Boolean = true,
     val nextChapterUrl: String? = null,
     val prevChapterUrl: String? = null,
+    val currentNovelId: String = "",
+    val allNovels: List<NovelEntity> = emptyList(),
     val cachedChapterCount: Int = 0,
     val cachedChapters: List<ChapterEntity> = emptyList(),
     val errorMessage: String? = null,
@@ -55,6 +59,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     private val db = AppDatabase.getInstance(application)
     private val chapterDao = db.chapterDao()
+    private val novelDao = db.novelDao()
     private val scraper = NovelScraper()
 
     val audioPipeline: AudioStreamPipeline
@@ -66,6 +71,13 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private var infoDismissJob: kotlinx.coroutines.Job? = null
 
     init {
+        // Collect all categorized novels from Room DB
+        viewModelScope.launch {
+            novelDao.getAllNovels().collect { novels ->
+                _uiState.value = _uiState.value.copy(allNovels = novels)
+            }
+        }
+
         // Collect cached chapters from Room DB
         viewModelScope.launch {
             chapterDao.getAllCachedChapters().collect { chapters ->
@@ -300,7 +312,20 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 if (isCorruptedChapter(cached)) {
                     chapterDao.deleteChapter(cached.url)
                 } else {
+                    val novelId = cached.novelId.ifBlank { NovelClassifier.toCanonicalNovelId(cached.novelTitle) }
+                    // Update novel reading progress in database
+                    val novel = NovelEntity(
+                        id = novelId,
+                        title = cached.novelTitle,
+                        lastReadUrl = cached.url,
+                        lastReadChapterTitle = cached.chapterTitle,
+                        lastReadSentenceIndex = cached.lastSentenceIndex,
+                        lastReadTimestamp = System.currentTimeMillis()
+                    )
+                    novelDao.insertOrUpdateNovel(novel)
+
                     applyChapter(
+                        novelId = novelId,
                         novelTitle = cached.novelTitle,
                         chapterTitle = cached.chapterTitle,
                         paragraphs = cached.paragraphs,
@@ -318,19 +343,47 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             val previousUrl = _uiState.value.currentUrl.takeIf { it.startsWith("http") }
-            val result = scraper.scrape(trimmedUrl, referer = previousUrl)
+            val activeNovelId = _uiState.value.currentNovelId.takeIf { it.isNotBlank() }
+            val activeNovelTitle = _uiState.value.novelTitle.takeIf { it.isNotBlank() }
+
+            val result = scraper.scrape(
+                url = trimmedUrl,
+                referer = previousUrl,
+                activeNovelId = activeNovelId,
+                activeNovelTitle = activeNovelTitle
+            )
             result.onSuccess { scraped ->
+                val novelId = scraped.novelId.ifBlank { NovelClassifier.toCanonicalNovelId(scraped.novelTitle) }
+
+                // Insert or update parent NovelEntity
+                val novel = NovelEntity(
+                    id = novelId,
+                    title = scraped.novelTitle,
+                    lastReadUrl = trimmedUrl,
+                    lastReadChapterTitle = scraped.chapterTitle,
+                    lastReadSentenceIndex = 0,
+                    lastReadTimestamp = System.currentTimeMillis()
+                )
+                novelDao.insertOrUpdateNovel(novel)
+
                 val entity = ChapterEntity(
                     url = trimmedUrl,
+                    novelId = novelId,
                     novelTitle = scraped.novelTitle,
                     chapterTitle = scraped.chapterTitle,
+                    chapterNumber = scraped.chapterNumber,
                     paragraphs = scraped.paragraphs,
                     nextChapterUrl = scraped.nextChapterUrl,
                     prevChapterUrl = scraped.prevChapterUrl
                 )
                 chapterDao.insertChapter(entity)
 
+                // Update total chapter count on Novel
+                val chapterCount = chapterDao.getChapterCountForNovel(novelId)
+                novelDao.updateTotalChapters(novelId, chapterCount)
+
                 applyChapter(
+                    novelId = novelId,
                     novelTitle = scraped.novelTitle,
                     chapterTitle = scraped.chapterTitle,
                     paragraphs = scraped.paragraphs,
@@ -372,12 +425,39 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun loadRawText(title: String, text: String) {
-        val parsed = scraper.parseRawText(title, text)
+        val activeNovelId = _uiState.value.currentNovelId.takeIf { it.isNotBlank() }
+        val activeNovelTitle = _uiState.value.novelTitle.takeIf { it.isNotBlank() }
+        val parsed = scraper.parseRawText(title, text, activeNovelId, activeNovelTitle)
+        val url = "local_paste_${System.currentTimeMillis()}"
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val novel = NovelEntity(
+                id = parsed.novelId,
+                title = parsed.novelTitle,
+                lastReadUrl = url,
+                lastReadChapterTitle = parsed.chapterTitle,
+                lastReadSentenceIndex = 0,
+                lastReadTimestamp = System.currentTimeMillis()
+            )
+            novelDao.insertOrUpdateNovel(novel)
+
+            val entity = ChapterEntity(
+                url = url,
+                novelId = parsed.novelId,
+                novelTitle = parsed.novelTitle,
+                chapterTitle = parsed.chapterTitle,
+                chapterNumber = parsed.chapterNumber,
+                paragraphs = parsed.paragraphs
+            )
+            chapterDao.insertChapter(entity)
+        }
+
         applyChapter(
-            novelTitle = "",
+            novelId = parsed.novelId,
+            novelTitle = parsed.novelTitle,
             chapterTitle = parsed.chapterTitle,
             paragraphs = parsed.paragraphs,
-            url = "local_paste_${System.currentTimeMillis()}",
+            url = url,
             nextUrl = null,
             prevUrl = null,
             startIndex = 0,
@@ -386,6 +466,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun applyChapter(
+        novelId: String,
         novelTitle: String,
         chapterTitle: String,
         paragraphs: List<String>,
@@ -422,6 +503,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
         _uiState.value = _uiState.value.copy(
             isLoading = false,
+            currentNovelId = novelId,
             novelTitle = novelTitle,
             chapterTitle = chapterTitle,
             currentUrl = url,
@@ -624,13 +706,49 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun resumeNovel(novelId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val novel = novelDao.getNovelById(novelId)
+            val targetUrl = novel?.lastReadUrl
+            if (!targetUrl.isNullOrBlank()) {
+                viewModelScope.launch(Dispatchers.Main) {
+                    selectChapter(targetUrl)
+                }
+            }
+        }
+    }
+
+    fun getChaptersForNovel(novelId: String): kotlinx.coroutines.flow.Flow<List<ChapterEntity>> {
+        return chapterDao.getChaptersForNovel(novelId)
+    }
+
+    fun deleteNovel(novelId: String) {
+        if (_uiState.value.currentNovelId == novelId) {
+            audioPipeline.stop()
+            PlaybackService.stopPlayback(getApplication())
+            _uiState.value = ReaderUiState(
+                infoMessage = "Novel and chapters deleted from storage."
+            )
+            scheduleInfoMessageDismiss()
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            chapterDao.deleteChaptersForNovel(novelId)
+            novelDao.deleteNovel(novelId)
+            _uiState.value = _uiState.value.copy(
+                infoMessage = "Novel deleted from bookshelf."
+            )
+            scheduleInfoMessageDismiss()
+        }
+    }
+
     fun clearAllCachedChapters() {
         audioPipeline.stop()
         PlaybackService.stopPlayback(getApplication())
         viewModelScope.launch(Dispatchers.IO) {
             chapterDao.clearAllChapters()
+            novelDao.clearAllNovels()
             _uiState.value = ReaderUiState(
-                infoMessage = "All saved chapters cleared from local storage."
+                infoMessage = "All saved novels and chapters cleared from local storage."
             )
             scheduleInfoMessageDismiss()
         }
@@ -638,9 +756,18 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun saveProgress(sentenceIndex: Int) {
         val url = _uiState.value.currentUrl
+        val novelId = _uiState.value.currentNovelId
         if (url.isNotBlank() && !url.startsWith("local_paste")) {
             viewModelScope.launch(Dispatchers.IO) {
                 chapterDao.updateProgress(url, sentenceIndex, 0)
+                if (novelId.isNotBlank()) {
+                    novelDao.updateLastRead(
+                        id = novelId,
+                        url = url,
+                        chapterTitle = _uiState.value.chapterTitle,
+                        sentenceIndex = sentenceIndex
+                    )
+                }
             }
         }
     }

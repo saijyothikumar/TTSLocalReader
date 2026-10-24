@@ -3,7 +3,7 @@
 [![Android](https://img.shields.io/badge/Platform-Android%209.0%2B%20(API%2028%2B)-3DDC84?logo=android&logoColor=white)](#)
 [![Kotlin](https://img.shields.io/badge/Kotlin-1.9.24-7F52FF?logo=kotlin&logoColor=white)](#)
 [![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?logo=jetpackcompose&logoColor=white)](#)
-[![APK Size](https://img.shields.io/badge/APK%20Size-2.67%20MB-F59E0B)](#)
+[![APK Size](https://img.shields.io/badge/APK%20Size-2.80%20MB-F59E0B)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A lightweight, 100% offline Text-to-Speech (TTS) novel reader for Android. Built natively with Jetpack Compose and Android's built-in `TextToSpeech` engine, TTS Local Reader delivers zero-gap paragraph streaming, vocal clarity enhancement, smart web novel scraping, and sleep timers with zero idle battery drain.
@@ -40,10 +40,14 @@ A lightweight, 100% offline Text-to-Speech (TTS) novel reader for Android. Built
 - **Author & Translator Notes**: Automatically identifies and silences boilerplate (`Author's Note`, `TL Note`, `A/N:`).
 - **Web Artifact Cleaning**: Unescapes residual HTML entities, standardizes full-width Asian punctuation, cleans LitRPG system brackets (`[System: ...]`), converts dialogue em-dashes and tildes into natural speech pauses, and strips action asterisks/underscores (`*sigh*` &rarr; `sigh`).
 
-### Universal Novel Extractor & Folder Storage
-- Scrapes web novels (Ranobes, Light Novel Pub, FreeWebNovel, etc.) while stripping site chrome, navigation menus, and comments.
-- Automatic novel categorization ([NovelIdentifier.kt](file:///app/src/main/java/com/tts/reader/data/scraper/NovelIdentifier.kt)) groups chapters into collapsible novel folders.
-- Local SQLite / Room Database caching with multi-step ($N+1, N+2$) background lookahead prefetching.
+### Novel-First Architecture & Obsidian Bookshelf
+- **Canonical Mirror Normalization (`NovelClassifier.kt`)**: Automatically identifies novel identity across mirror sites (Ranobes, Light Novel Pub, FreeWebNovel, etc.) by extracting canonical keys (e.g., `"shadow-slave"`), ensuring chapters from different sources group into the exact same novel.
+- **First-Class Novel Entity**: Backed by a dedicated `NovelEntity` Room table with last-read chapter title, last-read sentence index, total chapter tracking, and chronological ordering via float sequence parsing (`chapterNumber: Float`).
+- **Obsidian Bookshelf Sheet (`NovelBookshelfSheet`)**:
+  - *Level 1 (Bookshelf)*: Shows all saved novels with total chapter counts, last read chapter, 1-tap "Resume Reading", and "Chapters" drill-down.
+  - *Level 2 (Chapters Directory)*: Chronological chapter listing with active playing indicator, 1-tap playback, chapter URL copying, and single-chapter deletion.
+  - Safe deletion dialogs for individual chapters, entire novels, and full storage clearing.
+- **Lookahead Prefetching**: Multi-step ($N+1, N+2$) background lookahead prefetching with automatic purge of corrupted comments placeholders.
 - In-app Cloudflare solver sheet with synchronized WebView session cookies.
 
 ### Obsidian Amber Reading UI
@@ -59,11 +63,11 @@ Pre-built APKs are located in the project build outputs:
 
 | Variant | File Location | Size | Description |
 | :--- | :--- | :--- | :--- |
-| **Release (Recommended)** | `app/build/outputs/apk/release/app-release.apk` | **2.67 MB** | R8 tree-shaken and resource-shrunk production build. Signed with debug keys for immediate sideloading. |
+| **Release (Recommended)** | `app/build/outputs/apk/release/app-release.apk` | **2.80 MB** | R8 tree-shaken and resource-shrunk production build. Signed with debug keys for immediate sideloading. |
 | **Debug** | `app/build/outputs/apk/debug/app-debug.apk` | 54.85 MB | Full unminified debug APK with detailed symbol tables and developer logging. |
 
 > [!TIP]
-> For testing on a physical device, transfer **`app-release.apk`** (2.67 MB) to your phone or install via ADB:
+> For testing on a physical device, transfer **`app-release.apk`** (2.80 MB) to your phone or install via ADB:
 > ```powershell
 > adb install -r app\build\outputs\apk\release\app-release.apk
 > ```
@@ -80,14 +84,14 @@ Pre-built APKs are located in the project build outputs:
 ### Build Commands
 
 ```powershell
-# Build optimized release APK (2.67 MB)
+# Build optimized release APK (2.80 MB)
 .\gradlew.bat assembleRelease
 
 # Build debug APK
 .\gradlew.bat assembleDebug
 
 # Run unit tests
-.\gradlew.bat test
+.\gradlew.bat testDebugUnitTest
 ```
 
 > [!NOTE]
@@ -101,8 +105,8 @@ Pre-built APKs are located in the project build outputs:
 app/src/main/java/com/tts/reader/
 ├── TTSApp.kt                     # Application class & global engine lifecycle
 ├── data/
-│   ├── local/                    # Room Database (AppDatabase, ChapterEntity, ChapterDao)
-│   └── scraper/                  # NovelScraper, TextSanitizer, NovelIdentifier
+│   ├── local/                    # Room Database (AppDatabase, NovelEntity, NovelDao, ChapterEntity, ChapterDao)
+│   └── scraper/                  # NovelScraper, TextSanitizer, NovelClassifier
 ├── service/
 │   └── PlaybackService.kt        # Foreground Media Playback Service & MediaSessionCompat
 ├── tts/
@@ -110,7 +114,7 @@ app/src/main/java/com/tts/reader/
 │   └── SystemTtsEngine.kt        # Android TextToSpeech wrapper, clarity mode & engine switcher
 └── ui/
     ├── screens/
-    │   ├── ReaderScreen.kt       # Obsidian Amber reader view, dialogs, folder storage
+    │   ├── ReaderScreen.kt       # Obsidian Amber reader view, Novel Bookshelf & chapter navigation
     │   ├── SleepModeSheet.kt     # Sleep & loop timer configuration sheet
     │   └── CaptchaSolverSheet.kt # Embedded Cloudflare challenge solver
     ├── theme/                    # Color, Typography, and Theme definitions

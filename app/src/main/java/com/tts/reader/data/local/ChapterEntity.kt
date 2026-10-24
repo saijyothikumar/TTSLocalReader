@@ -5,13 +5,20 @@ import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 
-@Entity(tableName = "chapters")
+import androidx.room.Index
+
+@Entity(
+    tableName = "chapters",
+    indices = [Index(value = ["novelId"])]
+)
 @TypeConverters(StringListConverter::class)
 data class ChapterEntity(
     @PrimaryKey
     val url: String,
+    val novelId: String = "",
     val novelTitle: String,
     val chapterTitle: String,
+    val chapterNumber: Float = 0f,
     val paragraphs: List<String>,
     val nextChapterUrl: String? = null,
     val prevChapterUrl: String? = null,
