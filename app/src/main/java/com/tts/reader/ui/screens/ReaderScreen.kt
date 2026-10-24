@@ -1,16 +1,19 @@
-﻿package com.tts.reader.ui.screens
+package com.tts.reader.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
@@ -20,15 +23,31 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tts.reader.data.local.ChapterEntity
+import com.tts.reader.data.scraper.NovelIdentifier
 import com.tts.reader.data.scraper.TextSanitizer
 import com.tts.reader.ui.theme.*
 import com.tts.reader.ui.viewmodel.ReaderViewModel
+import com.tts.reader.ui.viewmodel.SleepMode
 import kotlinx.coroutines.launch
+
+sealed class DeleteTarget {
+    data class SingleChapter(val chapter: ChapterEntity) : DeleteTarget()
+    data class NovelFolder(val novelTitle: String, val urls: List<String>) : DeleteTarget()
+    data class SelectedChapters(val urls: List<String>) : DeleteTarget()
+    object ClearAll : DeleteTarget()
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,22 +56,39 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val clipboardManager = LocalClipboardManager.current
+
     var inputUrl by remember { mutableStateOf("") }
     var rawTextDialogVisible by remember { mutableStateOf(false) }
     var cacheDialogVisible by remember { mutableStateOf(false) }
     var voiceSettingsVisible by remember { mutableStateOf(false) }
     var chapterLibraryVisible by remember { mutableStateOf(false) }
+    var openUrlDialogVisible by remember { mutableStateOf(false) }
+    var chapterInfoDialogVisible by remember { mutableStateOf(false) }
+    var sleepSheetVisible by remember { mutableStateOf(false) }
+    var speedSheetVisible by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<DeleteTarget?>(null) }
+
     var rawInputText by remember { mutableStateOf("") }
     var rawInputTitle by remember { mutableStateOf("") }
-    var speedSheetVisible by remember { mutableStateOf(false) }
 
-    // Auto-scroll reading view to keep active sentence visible (even when paused or scrubbing)
+    // Auto-scroll reading view to keep active sentence visible
     val activeParagraphIdx = uiState.sentenceToParagraphMap.getOrNull(uiState.activeSentenceIndex) ?: 0
     LaunchedEffect(activeParagraphIdx) {
         if (uiState.paragraphs.isNotEmpty()) {
             coroutineScope.launch {
                 listState.animateScrollToItem(activeParagraphIdx)
             }
+        }
+    }
+
+    // Dismiss virtual keyboard automatically when user scrolls the reading list
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) {
+            focusManager.clearFocus()
+            keyboardController?.hide()
         }
     }
 
@@ -80,7 +116,13 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                             uiState.novelTitle != "Universal Reader" &&
                             uiState.novelTitle != "Web Novel"
 
-                    Column {
+                    Column(
+                        modifier = Modifier.clickable {
+                            if (uiState.currentUrl.isNotBlank()) {
+                                chapterInfoDialogVisible = true
+                            }
+                        }
+                    ) {
                         Text(
                             text = uiState.chapterTitle,
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
@@ -98,6 +140,26 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                     }
                 },
                 actions = {
+                    // Show chapter URL copy / info button when chapter is active
+                    if (uiState.currentUrl.isNotBlank() && !uiState.currentUrl.startsWith("local_paste")) {
+                        IconButton(onClick = { chapterInfoDialogVisible = true }) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = "Chapter Source Info",
+                                tint = AmberPrimary
+                            )
+                        }
+                    }
+
+                    // Open / Load URL Dialog Button (clean, uncluttered navigation)
+                    IconButton(onClick = { openUrlDialogVisible = true }) {
+                        Icon(
+                            imageVector = Icons.Default.AddLink,
+                            contentDescription = "Load Chapter Link",
+                            tint = AmberPrimary
+                        )
+                    }
+
                     IconButton(onClick = { voiceSettingsVisible = true }) {
                         Icon(
                             imageVector = Icons.Default.Tune,
@@ -105,17 +167,11 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                             tint = AmberPrimary
                         )
                     }
-                    IconButton(onClick = { rawTextDialogVisible = true }) {
-                        Icon(
-                            imageVector = Icons.Default.EditNote,
-                            contentDescription = "Paste Custom Text",
-                            tint = AmberPrimary
-                        )
-                    }
+
                     IconButton(onClick = { cacheDialogVisible = true }) {
                         Icon(
-                            imageVector = Icons.Default.DeleteOutline,
-                            contentDescription = "Manage Chapter Cache",
+                            imageVector = Icons.Default.Folder,
+                            contentDescription = "Saved Chapters Storage",
                             tint = AmberPrimary
                         )
                     }
@@ -128,11 +184,13 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                 activeSentence = uiState.activeSentenceIndex,
                 totalSentences = uiState.sentences.size,
                 playbackSpeed = uiState.playbackSpeed,
+                sleepMode = uiState.sleepMode,
                 hasNextChapter = !uiState.nextChapterUrl.isNullOrBlank(),
                 hasPrevChapter = !uiState.prevChapterUrl.isNullOrBlank(),
                 onPlayPause = { viewModel.togglePlayPause() },
                 onSeek = { viewModel.seekToSentence(it) },
                 onOpenSpeed = { speedSheetVisible = true },
+                onOpenSleep = { sleepSheetVisible = true },
                 onNextChapter = { viewModel.nextChapter() },
                 onPrevChapter = { viewModel.prevChapter() }
             )
@@ -142,51 +200,72 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-        ) {
-            // Compact URL Input Bar
-            Surface(
-                color = ObsidianSurface,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextField(
-                        value = inputUrl,
-                        onValueChange = { inputUrl = it },
-                        placeholder = { Text("Paste chapter or novel URL...", color = TextMuted, fontSize = 13.sp) },
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
-                        modifier = Modifier.weight(1f),
-                        singleLine = true
-                    )
-                    IconButton(
-                        onClick = {
-                            if (inputUrl.isNotBlank()) {
-                                viewModel.loadUrl(inputUrl.trim())
-                            }
+                .pointerInput(Unit) {
+                    // Tap anywhere on middle/background to clear focus and dismiss keyboard
+                    detectTapGestures(
+                        onTap = {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
                         }
+                    )
+                }
+        ) {
+            // URL Input Bar only displays when NO chapter is loaded (keeps reading view 100% uncluttered)
+            if (uiState.paragraphs.isEmpty()) {
+                Surface(
+                    color = ObsidianSurface,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.CloudDownload,
-                            contentDescription = "Load Chapter",
-                            tint = AmberPrimary
+                        TextField(
+                            value = inputUrl,
+                            onValueChange = { inputUrl = it },
+                            placeholder = { Text("Paste chapter or novel URL...", color = TextMuted, fontSize = 13.sp) },
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(onDone = {
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                                if (inputUrl.isNotBlank()) {
+                                    viewModel.loadUrl(inputUrl.trim())
+                                }
+                            }),
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent
+                            ),
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
                         )
+                        IconButton(
+                            onClick = {
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                                if (inputUrl.isNotBlank()) {
+                                    viewModel.loadUrl(inputUrl.trim())
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CloudDownload,
+                                contentDescription = "Load Chapter",
+                                tint = AmberPrimary
+                            )
+                        }
                     }
                 }
             }
 
-            // Info Notification Banner
+            // Auto-Dismissing Info Notification Banner (Dismisses after ~3.5s automatically)
             uiState.infoMessage?.let { info ->
                 Surface(
                     color = AmberGlow,
@@ -196,7 +275,7 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                         .padding(horizontal = 12.dp, vertical = 4.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(8.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
@@ -273,7 +352,7 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                         if (uiState.captchaChallengeUrl != null) {
                             Spacer(modifier = Modifier.height(8.dp))
                             Button(
-                                onClick = { /* Sheet opens automatically or triggers via state */ },
+                                onClick = { /* Solver sheet handles challenge */ },
                                 colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
                                 shape = RoundedCornerShape(6.dp),
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
@@ -320,7 +399,10 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                     CircularProgressIndicator(color = AmberPrimary)
                 }
             } else if (uiState.paragraphs.isEmpty()) {
-                EmptyStateView(onPasteTextClick = { rawTextDialogVisible = true })
+                EmptyStateView(
+                    onPasteTextClick = { rawTextDialogVisible = true },
+                    onOpenUrlClick = { openUrlDialogVisible = true }
+                )
             } else {
                 LazyColumn(
                     state = listState,
@@ -341,7 +423,11 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(bottom = 12.dp)
-                                    .clickable { viewModel.seekToSentence(0) }
+                                    .clickable {
+                                        focusManager.clearFocus()
+                                        keyboardController?.hide()
+                                        viewModel.seekToSentence(0)
+                                    }
                             ) {
                                 Column(modifier = Modifier.padding(14.dp)) {
                                     val showNovelHeader = uiState.novelTitle.isNotBlank() &&
@@ -378,6 +464,8 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                             text = paragraphText,
                             isActive = isParagraphActive,
                             onClick = {
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
                                 val targetSentence = uiState.sentenceToParagraphMap.indexOf(targetListIndex)
                                 if (targetSentence != -1) {
                                     viewModel.seekToSentence(targetSentence)
@@ -391,16 +479,32 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
         }
     }
 
-    // Voice & Reading Settings Modal Sheet
+    // Modal Sleep Mode & Chapter Timer Bottom Sheet
+    if (sleepSheetVisible) {
+        SleepModeSheet(
+            currentSleepMode = uiState.sleepMode,
+            onSetSleepMode = { viewModel.setSleepMode(it) },
+            onDismiss = { sleepSheetVisible = false }
+        )
+    }
+
+    // Voice & Reading Settings Modal Sheet (With Engine & Speech Clarity Controls)
     if (voiceSettingsVisible) {
+        val context = androidx.compose.ui.platform.LocalContext.current
         VoiceSettingsSheet(
             currentSpeed = uiState.playbackSpeed,
             currentPitch = uiState.pitch,
             selectedVoice = uiState.selectedVoiceName,
             availableVoices = uiState.availableVoices,
+            currentEngineLabel = uiState.currentEngineLabel,
+            availableEngines = uiState.availableEngines,
+            speechClarityMode = uiState.speechClarityMode,
             onSpeedChange = { viewModel.setSpeed(it) },
             onPitchChange = { viewModel.setPitch(it) },
             onVoiceSelected = { viewModel.setSystemVoice(it) },
+            onSwitchEngine = { viewModel.switchTtsEngine(it) },
+            onToggleSpeechClarity = { viewModel.setSpeechClarityMode(it) },
+            onOpenSystemTtsSettings = { viewModel.openSystemTtsSettings(context) },
             onDismiss = { voiceSettingsVisible = false }
         )
     }
@@ -414,13 +518,17 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
         )
     }
 
-    // Chapter Library Navigation Drawer / Sheet
+    // Chapter Library Navigation Drawer / Sheet (Grouped by Novel Folder)
     if (chapterLibraryVisible) {
         ChapterLibrarySheet(
             cachedChapters = uiState.cachedChapters,
             currentUrl = uiState.currentUrl,
             onSelectChapter = { viewModel.selectChapter(it) },
             onOpenManageCache = { cacheDialogVisible = true },
+            onCopyUrl = { url ->
+                clipboardManager.setText(AnnotatedString(url))
+                viewModel.showTemporaryInfo("Chapter URL copied to clipboard.")
+            },
             onDismiss = { chapterLibraryVisible = false }
         )
     }
@@ -431,6 +539,31 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
             currentSpeed = uiState.playbackSpeed,
             onSpeedSelected = { viewModel.setSpeed(it) },
             onDismiss = { speedSheetVisible = false }
+        )
+    }
+
+    // Dedicated Open / Load URL Dialog
+    if (openUrlDialogVisible) {
+        OpenUrlDialog(
+            initialUrl = "",
+            onLoadUrl = { url ->
+                viewModel.loadUrl(url)
+            },
+            onDismiss = { openUrlDialogVisible = false }
+        )
+    }
+
+    // Dedicated Chapter Information & URL Copy Dialog
+    if (chapterInfoDialogVisible) {
+        ChapterInfoDialog(
+            chapterTitle = uiState.chapterTitle,
+            novelTitle = uiState.novelTitle,
+            chapterUrl = uiState.currentUrl,
+            onCopyUrl = {
+                clipboardManager.setText(AnnotatedString(uiState.currentUrl))
+                viewModel.showTemporaryInfo("Chapter URL copied to clipboard.")
+            },
+            onDismiss = { chapterInfoDialogVisible = false }
         )
     }
 
@@ -473,6 +606,8 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                 Button(
                     onClick = {
                         if (rawInputText.isNotBlank()) {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
                             viewModel.loadRawText(rawInputTitle, rawInputText)
                             rawTextDialogVisible = false
                         }
@@ -490,218 +625,830 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
         )
     }
 
-    // Chapter Storage & Cache Management Dialog with Checkboxes
-    var selectedUrls by remember { mutableStateOf(setOf<String>()) }
-
+    // Saved Chapters Storage Management Dialog (Categorized by Novel Folders)
     if (cacheDialogVisible) {
-        AlertDialog(
-            onDismissRequest = { 
+        SavedChaptersDialog(
+            cachedChapters = uiState.cachedChapters,
+            currentUrl = uiState.currentUrl,
+            onSelectChapter = { url ->
+                viewModel.loadUrl(url)
                 cacheDialogVisible = false
-                selectedUrls = emptySet()
             },
-            containerColor = ObsidianSurface,
-            title = {
+            onCopyUrl = { url ->
+                clipboardManager.setText(AnnotatedString(url))
+                viewModel.showTemporaryInfo("Chapter URL copied to clipboard.")
+            },
+            onRequestDeleteSingle = { chapter ->
+                pendingDelete = DeleteTarget.SingleChapter(chapter)
+            },
+            onRequestDeleteFolder = { novelTitle, urls ->
+                pendingDelete = DeleteTarget.NovelFolder(novelTitle, urls)
+            },
+            onRequestDeleteSelected = { urls ->
+                pendingDelete = DeleteTarget.SelectedChapters(urls)
+            },
+            onRequestClearAll = {
+                pendingDelete = DeleteTarget.ClearAll
+            },
+            onDismiss = { cacheDialogVisible = false }
+        )
+    }
+
+    // Confirmation Popups for Deletion (Single Chapter, Novel Folder, Multi-select, or Clear All)
+    pendingDelete?.let { target ->
+        DeleteConfirmationDialog(
+            target = target,
+            onConfirm = {
+                when (target) {
+                    is DeleteTarget.SingleChapter -> viewModel.deleteChapter(target.chapter.url)
+                    is DeleteTarget.NovelFolder -> viewModel.deleteNovelFolder(target.novelTitle, target.urls)
+                    is DeleteTarget.SelectedChapters -> viewModel.deleteChapters(target.urls)
+                    is DeleteTarget.ClearAll -> viewModel.clearAllCachedChapters()
+                }
+                pendingDelete = null
+            },
+            onDismiss = { pendingDelete = null }
+        )
+    }
+}
+
+@Composable
+fun DeleteConfirmationDialog(
+    target: DeleteTarget,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val (title, message) = when (target) {
+        is DeleteTarget.SingleChapter ->
+            "Delete Chapter" to "Are you sure you want to remove \"${target.chapter.chapterTitle.ifBlank { "this chapter" }}\" from offline saved storage?"
+        is DeleteTarget.NovelFolder ->
+            "Delete Novel Folder" to "Are you sure you want to delete all ${target.urls.size} saved chapters of \"${target.novelTitle}\"?"
+        is DeleteTarget.SelectedChapters ->
+            "Delete Selected Chapters" to "Are you sure you want to delete ${target.urls.size} selected chapter(s) from storage?"
+        is DeleteTarget.ClearAll ->
+            "Clear All Saved Chapters" to "Are you sure you want to delete all saved chapters from offline storage? This action cannot be undone."
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ObsidianSurface,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.WarningAmber,
+                    contentDescription = null,
+                    tint = StatusError,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(title, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            }
+        },
+        text = {
+            Text(message, color = TextSecondary, fontSize = 13.sp, lineHeight = 18.sp)
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = StatusError),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Delete", color = Color.White, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextSecondary)
+            }
+        }
+    )
+}
+
+@Composable
+fun OpenUrlDialog(
+    initialUrl: String,
+    onLoadUrl: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var text by remember { mutableStateOf(initialUrl) }
+    val clipboardManager = LocalClipboardManager.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ObsidianSurface,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.AddLink,
+                    contentDescription = null,
+                    tint = AmberPrimary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Load Chapter URL", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    placeholder = { Text("Paste chapter link...", color = TextMuted, fontSize = 12.sp) },
+                    trailingIcon = {
+                        if (text.isNotBlank()) {
+                            IconButton(onClick = { text = "" }) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = TextMuted, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary,
+                        focusedBorderColor = AmberPrimary,
+                        unfocusedBorderColor = ObsidianSurfaceVariant
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = {
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
+                    }),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.End
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.DeleteOutline,
-                            contentDescription = null,
-                            tint = AmberPrimary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Chapter Storage & Cache", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    TextButton(
+                        onClick = {
+                            val clipText = clipboardManager.getText()?.text
+                            if (!clipText.isNullOrBlank()) {
+                                text = clipText.trim()
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Icon(Icons.Default.ContentPaste, contentDescription = null, tint = AmberPrimary, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Paste from Clipboard", color = AmberPrimary, fontSize = 11.sp)
                     }
-                    Text(
-                        text = "${uiState.cachedChapters.size} saved",
-                        color = AmberPrimary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-            },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "Chapters are stored on device disk (~20 KB each) in Room SQLite. Only the active chapter is loaded in RAM.",
-                        color = TextSecondary,
-                        fontSize = 11.sp
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    if (uiState.cachedChapters.isNotEmpty()) {
-                        // Action & Selection Toolbar
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(ObsidianSurfaceVariant, RoundedCornerShape(8.dp))
-                                .padding(horizontal = 6.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            val allSelected = selectedUrls.size == uiState.cachedChapters.size && uiState.cachedChapters.isNotEmpty()
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.clickable {
-                                    selectedUrls = if (allSelected) emptySet() else uiState.cachedChapters.map { it.url }.toSet()
-                                }
-                            ) {
-                                Checkbox(
-                                    checked = allSelected,
-                                    onCheckedChange = { checked ->
-                                        selectedUrls = if (checked) uiState.cachedChapters.map { it.url }.toSet() else emptySet()
-                                    },
-                                    colors = CheckboxDefaults.colors(
-                                        checkedColor = AmberPrimary,
-                                        uncheckedColor = TextSecondary,
-                                        checkmarkColor = ObsidianBackground
-                                    )
-                                )
-                                Text("All", color = TextPrimary, fontSize = 12.sp)
-                            }
-
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (selectedUrls.isNotEmpty()) {
-                                    Button(
-                                        onClick = {
-                                            viewModel.deleteChapters(selectedUrls.toList())
-                                            selectedUrls = emptySet()
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = StatusError),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                        shape = RoundedCornerShape(6.dp),
-                                        modifier = Modifier.height(30.dp)
-                                    ) {
-                                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Delete (${selectedUrls.size})", fontSize = 11.sp)
-                                    }
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                }
-
-                                TextButton(
-                                    onClick = {
-                                        viewModel.clearAllCachedChapters()
-                                        selectedUrls = emptySet()
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                                ) {
-                                    Text("Clear All", color = StatusError, fontSize = 11.sp)
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Scrollable List of Cached Chapters with Checkboxes
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 280.dp)
-                        ) {
-                            itemsIndexed(uiState.cachedChapters) { _, chapter ->
-                                val isChecked = selectedUrls.contains(chapter.url)
-                                val isCurrent = chapter.url == uiState.currentUrl
-                                Surface(
-                                    color = if (isCurrent) AmberGlow.copy(alpha = 0.15f) else ObsidianSurfaceVariant.copy(alpha = 0.5f),
-                                    shape = RoundedCornerShape(6.dp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 3.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 6.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Checkbox(
-                                            checked = isChecked,
-                                            onCheckedChange = { checked ->
-                                                selectedUrls = if (checked) {
-                                                    selectedUrls + chapter.url
-                                                } else {
-                                                    selectedUrls - chapter.url
-                                                }
-                                            },
-                                            colors = CheckboxDefaults.colors(
-                                                checkedColor = AmberPrimary,
-                                                uncheckedColor = TextSecondary,
-                                                checkmarkColor = ObsidianBackground
-                                            ),
-                                            modifier = Modifier.size(24.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Column(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .clickable {
-                                                    if (!isCurrent) {
-                                                        viewModel.loadUrl(chapter.url)
-                                                        cacheDialogVisible = false
-                                                    }
-                                                }
-                                        ) {
-                                            Text(
-                                                text = chapter.chapterTitle.ifBlank { "Untitled Chapter" },
-                                                color = if (isCurrent) AmberPrimary else TextPrimary,
-                                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
-                                                fontSize = 12.sp,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = "${chapter.novelTitle} • ${chapter.paragraphs.size} pars • Sentence ${chapter.lastSentenceIndex + 1}",
-                                                color = TextSecondary,
-                                                fontSize = 10.sp,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                        IconButton(
-                                            onClick = {
-                                                viewModel.deleteChapter(chapter.url)
-                                                selectedUrls = selectedUrls - chapter.url
-                                            },
-                                            modifier = Modifier.size(28.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Close,
-                                                contentDescription = "Delete Chapter",
-                                                tint = TextSecondary,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("No chapters currently stored in offline cache.", color = TextMuted, fontSize = 12.sp)
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = {
-                    cacheDialogVisible = false
-                    selectedUrls = emptySet()
-                }) {
-                    Text("Close", color = TextSecondary)
                 }
             }
-        )
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (text.isNotBlank()) {
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
+                        onLoadUrl(text.trim())
+                        onDismiss()
+                    }
+                },
+                enabled = text.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Load", color = ObsidianBackground, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextSecondary)
+            }
+        }
+    )
+}
+
+@Composable
+fun ChapterInfoDialog(
+    chapterTitle: String,
+    novelTitle: String,
+    chapterUrl: String,
+    onCopyUrl: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ObsidianSurface,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Info, contentDescription = null, tint = AmberPrimary, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Chapter Information", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (novelTitle.isNotBlank()) {
+                    Text("NOVEL", color = AmberPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                    Text(novelTitle, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+
+                Text("CHAPTER", color = AmberPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Text(chapterTitle, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(modifier = Modifier.height(10.dp))
+
+                if (chapterUrl.isNotBlank()) {
+                    Text("SOURCE URL", color = AmberPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                    Surface(
+                        color = ObsidianSurfaceVariant.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp)
+                    ) {
+                        Text(
+                            text = chapterUrl,
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(8.dp),
+                            maxLines = 4,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (chapterUrl.isNotBlank()) {
+                Button(
+                    onClick = {
+                        onCopyUrl()
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, tint = ObsidianBackground, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Copy URL", color = ObsidianBackground, fontWeight = FontWeight.Bold)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = TextSecondary)
+            }
+        }
+    )
+}
+
+@Composable
+fun SavedChaptersDialog(
+    cachedChapters: List<ChapterEntity>,
+    currentUrl: String,
+    onSelectChapter: (String) -> Unit,
+    onCopyUrl: (String) -> Unit,
+    onRequestDeleteSingle: (ChapterEntity) -> Unit,
+    onRequestDeleteFolder: (String, List<String>) -> Unit,
+    onRequestDeleteSelected: (List<String>) -> Unit,
+    onRequestClearAll: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedUrls by remember { mutableStateOf(setOf<String>()) }
+    var expandedNovels by remember { mutableStateOf(setOf<String>()) }
+    val novelGroups = remember(cachedChapters) { NovelIdentifier.groupChaptersByNovel(cachedChapters) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ObsidianSurface,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Folder,
+                        contentDescription = null,
+                        tint = AmberPrimary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Saved Chapters", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+                Text(
+                    text = "${cachedChapters.size} saved",
+                    color = AmberPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (cachedChapters.isNotEmpty()) {
+                    // Action & Multi-Selection Toolbar
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(ObsidianSurfaceVariant, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val allSelected = selectedUrls.size == cachedChapters.size && cachedChapters.isNotEmpty()
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable {
+                                selectedUrls = if (allSelected) emptySet() else cachedChapters.map { it.url }.toSet()
+                            }
+                        ) {
+                            Checkbox(
+                                checked = allSelected,
+                                onCheckedChange = { checked ->
+                                    selectedUrls = if (checked) cachedChapters.map { it.url }.toSet() else emptySet()
+                                },
+                                colors = CheckboxDefaults.colors(
+                                    checkedColor = AmberPrimary,
+                                    uncheckedColor = TextSecondary,
+                                    checkmarkColor = ObsidianBackground
+                                )
+                            )
+                            Text("All", color = TextPrimary, fontSize = 12.sp)
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (selectedUrls.isNotEmpty()) {
+                                Button(
+                                    onClick = { onRequestDeleteSelected(selectedUrls.toList()) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = StatusError),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier.height(30.dp)
+                                ) {
+                                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Delete (${selectedUrls.size})", fontSize = 11.sp)
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                            }
+
+                            TextButton(
+                                onClick = onRequestClearAll,
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                            ) {
+                                Text("Clear All", color = StatusError, fontSize = 11.sp)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Categorized Novel Folders
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        novelGroups.forEach { (novelKey, chapters) ->
+                            val cleanTitle = NovelIdentifier.normalizeNovelTitle(chapters.firstOrNull()?.novelTitle ?: novelKey)
+                            val isExpanded = expandedNovels.contains(novelKey) || novelGroups.size == 1
+
+                            item(key = "novel_$novelKey") {
+                                Surface(
+                                    color = ObsidianSurfaceVariant.copy(alpha = 0.5f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        // Folder Header
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    expandedNovels = if (isExpanded) {
+                                                        expandedNovels - novelKey
+                                                    } else {
+                                                        expandedNovels + novelKey
+                                                    }
+                                                }
+                                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isExpanded) Icons.Default.FolderOpen else Icons.Default.Folder,
+                                                    contentDescription = null,
+                                                    tint = AmberPrimary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = cleanTitle,
+                                                    color = AmberPrimary,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 13.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f, fill = false)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Surface(
+                                                    color = AmberGlow,
+                                                    shape = RoundedCornerShape(10.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "${chapters.size} ch",
+                                                        color = TextPrimary,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                IconButton(
+                                                    onClick = { onRequestDeleteFolder(cleanTitle, chapters.map { it.url }) },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.DeleteOutline,
+                                                        contentDescription = "Delete Novel Folder",
+                                                        tint = StatusError.copy(alpha = 0.8f),
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                                Icon(
+                                                    imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                                    contentDescription = null,
+                                                    tint = TextSecondary,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+
+                                        // Expanded Chapter List inside this folder
+                                        if (isExpanded) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                                            ) {
+                                                chapters.forEach { chapter ->
+                                                    val isChecked = selectedUrls.contains(chapter.url)
+                                                    val isCurrent = chapter.url == currentUrl
+
+                                                    Surface(
+                                                        color = if (isCurrent) AmberGlow.copy(alpha = 0.2f) else ObsidianSurface.copy(alpha = 0.6f),
+                                                        shape = RoundedCornerShape(6.dp),
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .padding(horizontal = 6.dp, vertical = 5.dp),
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Checkbox(
+                                                                checked = isChecked,
+                                                                onCheckedChange = { checked ->
+                                                                    selectedUrls = if (checked) {
+                                                                        selectedUrls + chapter.url
+                                                                    } else {
+                                                                        selectedUrls - chapter.url
+                                                                    }
+                                                                },
+                                                                colors = CheckboxDefaults.colors(
+                                                                    checkedColor = AmberPrimary,
+                                                                    uncheckedColor = TextSecondary,
+                                                                    checkmarkColor = ObsidianBackground
+                                                                ),
+                                                                modifier = Modifier.size(22.dp)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(6.dp))
+                                                            Column(
+                                                                modifier = Modifier
+                                                                    .weight(1f)
+                                                                    .clickable {
+                                                                        if (!isCurrent) {
+                                                                            onSelectChapter(chapter.url)
+                                                                        }
+                                                                    }
+                                                            ) {
+                                                                Text(
+                                                                    text = chapter.chapterTitle.ifBlank { "Untitled Chapter" },
+                                                                    color = if (isCurrent) AmberPrimary else TextPrimary,
+                                                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                                                    fontSize = 12.sp,
+                                                                    maxLines = 1,
+                                                                    overflow = TextOverflow.Ellipsis
+                                                                )
+                                                                Text(
+                                                                    text = "Sentence ${chapter.lastSentenceIndex + 1} • ${chapter.paragraphs.size} pars",
+                                                                    color = TextSecondary,
+                                                                    fontSize = 10.sp
+                                                                )
+                                                            }
+
+                                                            // Copy URL Button
+                                                            IconButton(
+                                                                onClick = { onCopyUrl(chapter.url) },
+                                                                modifier = Modifier.size(26.dp)
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.ContentCopy,
+                                                                    contentDescription = "Copy URL",
+                                                                    tint = TextSecondary,
+                                                                    modifier = Modifier.size(14.dp)
+                                                                )
+                                                            }
+
+                                                            // Delete Chapter Button
+                                                            IconButton(
+                                                                onClick = { onRequestDeleteSingle(chapter) },
+                                                                modifier = Modifier.size(26.dp)
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Close,
+                                                                    contentDescription = "Delete Chapter",
+                                                                    tint = TextSecondary,
+                                                                    modifier = Modifier.size(15.dp)
+                                                                )
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("No chapters currently stored in offline cache.", color = TextMuted, fontSize = 12.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = TextSecondary)
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChapterLibrarySheet(
+    cachedChapters: List<ChapterEntity>,
+    currentUrl: String,
+    onSelectChapter: (String) -> Unit,
+    onOpenManageCache: () -> Unit,
+    onCopyUrl: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    val filteredChapters = remember(searchQuery, cachedChapters) {
+        if (searchQuery.isBlank()) {
+            cachedChapters
+        } else {
+            cachedChapters.filter {
+                it.chapterTitle.contains(searchQuery, ignoreCase = true) ||
+                it.novelTitle.contains(searchQuery, ignoreCase = true)
+            }
+        }
+    }
+
+    val groupedNovels = remember(filteredChapters) {
+        NovelIdentifier.groupChaptersByNovel(filteredChapters)
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = ObsidianSurface,
+        dragHandle = { BottomSheetDefaults.DragHandle(color = AmberPrimary) }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                        contentDescription = null,
+                        tint = AmberPrimary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Chapter Library (${cachedChapters.size})",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = TextPrimary
+                    )
+                }
+
+                TextButton(
+                    onClick = {
+                        onDismiss()
+                        onOpenManageCache()
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Folder,
+                        contentDescription = null,
+                        tint = AmberPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Manage", color = AmberPrimary, fontSize = 12.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Filter chapters or novels...", color = TextMuted, fontSize = 12.sp) },
+                leadingIcon = {
+                    Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(18.dp))
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotBlank()) {
+                        IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(20.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary,
+                    focusedBorderColor = AmberPrimary,
+                    unfocusedBorderColor = ObsidianSurfaceVariant
+                ),
+                shape = RoundedCornerShape(10.dp),
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (filteredChapters.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(180.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = if (searchQuery.isNotBlank()) "No matching chapters found." else "No chapters currently saved in cache.\nLoad any chapter to save it here for offline reading.",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 350.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    groupedNovels.forEach { (novelKey, chapters) ->
+                        val cleanNovelTitle = NovelIdentifier.normalizeNovelTitle(chapters.firstOrNull()?.novelTitle ?: novelKey)
+
+                        item(key = "lib_$novelKey") {
+                            Text(
+                                text = cleanNovelTitle.uppercase(),
+                                color = AmberPrimary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                            )
+                        }
+
+                        itemsIndexed(chapters, key = { _, ch -> ch.url }) { _, chapter ->
+                            val isCurrent = chapter.url == currentUrl
+                            Surface(
+                                color = if (isCurrent) AmberGlow.copy(alpha = 0.25f) else ObsidianSurfaceVariant.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(
+                                    width = if (isCurrent) 1.5.dp else 0.dp,
+                                    color = if (isCurrent) AmberPrimary else Color.Transparent
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onSelectChapter(chapter.url)
+                                        onDismiss()
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = chapter.chapterTitle.ifBlank { "Untitled Chapter" },
+                                            color = if (isCurrent) AmberPrimary else TextPrimary,
+                                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                            fontSize = 13.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = "${chapter.paragraphs.size} paragraphs • Last at Sentence ${chapter.lastSentenceIndex + 1}",
+                                            color = TextSecondary,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = { onCopyUrl(chapter.url) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ContentCopy,
+                                            contentDescription = "Copy URL",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+
+                                    if (isCurrent) {
+                                        Surface(
+                                            color = AmberPrimary,
+                                            shape = RoundedCornerShape(12.dp),
+                                            modifier = Modifier.padding(start = 6.dp)
+                                        ) {
+                                            Text(
+                                                text = "Playing",
+                                                color = ObsidianBackground,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                            )
+                                        }
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = "Play Chapter",
+                                            tint = TextSecondary,
+                                            modifier = Modifier
+                                                .size(20.dp)
+                                                .padding(start = 6.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = ObsidianSurfaceVariant),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(42.dp)
+            ) {
+                Text("Close", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
     }
 }
 
@@ -712,9 +1459,15 @@ fun VoiceSettingsSheet(
     currentPitch: Float,
     selectedVoice: String?,
     availableVoices: List<String>,
+    currentEngineLabel: String,
+    availableEngines: List<Pair<String, String>>,
+    speechClarityMode: Boolean,
     onSpeedChange: (Float) -> Unit,
     onPitchChange: (Float) -> Unit,
     onVoiceSelected: (String) -> Unit,
+    onSwitchEngine: (String) -> Unit,
+    onToggleSpeechClarity: (Boolean) -> Unit,
+    onOpenSystemTtsSettings: () -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(
@@ -739,7 +1492,7 @@ fun VoiceSettingsSheet(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Voice & Reading Settings",
+                    text = "Voice & Speech Engine Settings",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     color = TextPrimary
                 )
@@ -747,40 +1500,142 @@ fun VoiceSettingsSheet(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Engine Info Banner
+            // Active Speech Engine Card
             Surface(
                 color = ObsidianSurfaceVariant.copy(alpha = 0.5f),
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                        contentDescription = null,
-                        tint = AmberPrimary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "Android System TTS",
-                            color = AmberPrimary,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        )
-                        Text(
-                            text = "100% offline, zero download required, battery efficient.",
-                            color = TextSecondary,
-                            fontSize = 11.sp
-                        )
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "ACTIVE TTS ENGINE",
+                                color = AmberPrimary,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = currentEngineLabel,
+                                color = TextPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        TextButton(
+                            onClick = onOpenSystemTtsSettings,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Icon(Icons.Default.Settings, contentDescription = null, tint = AmberPrimary, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("System Settings", color = AmberPrimary, fontSize = 11.sp)
+                        }
+                    }
+
+                    // If multiple engines are installed, provide 1-tap engine switcher
+                    if (availableEngines.size > 1) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            availableEngines.forEach { (pkg, label) ->
+                                val isActive = currentEngineLabel.contains(label, ignoreCase = true) ||
+                                        currentEngineLabel.contains(pkg, ignoreCase = true)
+                                Surface(
+                                    color = if (isActive) AmberPrimary else ObsidianSurface,
+                                    shape = RoundedCornerShape(6.dp),
+                                    border = BorderStroke(1.dp, if (isActive) AmberPrimary else ObsidianSurfaceVariant),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { onSwitchEngine(pkg) }
+                                ) {
+                                    Box(
+                                        modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = if (pkg.contains("google")) "Google TTS" else label.take(12),
+                                            color = if (isActive) ObsidianBackground else TextSecondary,
+                                            fontSize = 11.sp,
+                                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Speech Clarity Mode Switch (Crucial for OriginOS / Vivo / iQOO / Dolby Atmos DSP bypass)
+            Surface(
+                color = if (speechClarityMode) AmberGlow.copy(alpha = 0.25f) else ObsidianSurfaceVariant.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, if (speechClarityMode) AmberPrimary else Color.Transparent),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Speech Clarity Mode",
+                                color = if (speechClarityMode) AmberPrimary else TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                color = if (speechClarityMode) AmberPrimary else ObsidianSurfaceVariant,
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = if (speechClarityMode) "HIGH CLARITY" else "MEDIA",
+                                    color = if (speechClarityMode) ObsidianBackground else TextMuted,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Bypasses device music equalizers & bass boost for crisp, intelligible speech.",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp
+                        )
+                    }
+                    Switch(
+                        checked = speechClarityMode,
+                        onCheckedChange = onToggleSpeechClarity,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = ObsidianBackground,
+                            checkedTrackColor = AmberPrimary,
+                            uncheckedThumbColor = TextMuted,
+                            uncheckedTrackColor = ObsidianSurfaceVariant
+                        )
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
 
             // Speech Rate Control
             Row(
@@ -843,7 +1698,7 @@ fun VoiceSettingsSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             // Pitch Control
             Row(
@@ -879,13 +1734,24 @@ fun VoiceSettingsSheet(
 
             // Installed Voice Selector (if available)
             if (availableVoices.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "Installed System Voice",
-                    color = TextPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp
-                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Installed Offline Voices",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        text = "${availableVoices.size} available",
+                        color = TextSecondary,
+                        fontSize = 11.sp
+                    )
+                }
                 Spacer(modifier = Modifier.height(6.dp))
 
                 Column(
@@ -897,6 +1763,8 @@ fun VoiceSettingsSheet(
                         items(availableVoices.size) { vIdx ->
                             val voiceName = availableVoices[vIdx]
                             val isSelected = voiceName == selectedVoice
+                            val isHighQuality = voiceName.contains("local", ignoreCase = true) ||
+                                    voiceName.contains("neural", ignoreCase = true)
                             val displayName = voiceName
                                 .substringAfterLast("/")
                                 .replace("#", " ")
@@ -916,14 +1784,33 @@ fun VoiceSettingsSheet(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text(
-                                        text = displayName,
-                                        color = if (isSelected) AmberPrimary else TextSecondary,
-                                        fontSize = 12.sp,
-                                        maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
                                         modifier = Modifier.weight(1f)
-                                    )
+                                    ) {
+                                        Text(
+                                            text = displayName,
+                                            color = if (isSelected) AmberPrimary else TextSecondary,
+                                            fontSize = 12.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (isHighQuality) {
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Surface(
+                                                color = AmberGlow,
+                                                shape = RoundedCornerShape(4.dp)
+                                            ) {
+                                                Text(
+                                                    text = "HQ",
+                                                    color = AmberPrimary,
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                    }
                                     if (isSelected) {
                                         Icon(
                                             imageVector = Icons.Default.Check,
@@ -939,7 +1826,7 @@ fun VoiceSettingsSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             Button(
                 onClick = onDismiss,
@@ -950,223 +1837,6 @@ fun VoiceSettingsSheet(
                     .height(42.dp)
             ) {
                 Text("Done", color = ObsidianBackground, fontWeight = FontWeight.Bold)
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ChapterLibrarySheet(
-    cachedChapters: List<com.tts.reader.data.local.ChapterEntity>,
-    currentUrl: String,
-    onSelectChapter: (String) -> Unit,
-    onOpenManageCache: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    var searchQuery by remember { mutableStateOf("") }
-    val filteredChapters = remember(searchQuery, cachedChapters) {
-        if (searchQuery.isBlank()) {
-            cachedChapters
-        } else {
-            cachedChapters.filter {
-                it.chapterTitle.contains(searchQuery, ignoreCase = true) ||
-                it.novelTitle.contains(searchQuery, ignoreCase = true)
-            }
-        }
-    }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = ObsidianSurface,
-        dragHandle = { BottomSheetDefaults.DragHandle(color = AmberPrimary) }
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.MenuBook,
-                        contentDescription = null,
-                        tint = AmberPrimary,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Chapter Library (${cachedChapters.size})",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = TextPrimary
-                    )
-                }
-
-                TextButton(
-                    onClick = {
-                        onDismiss()
-                        onOpenManageCache()
-                    }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.DeleteOutline,
-                        contentDescription = null,
-                        tint = AmberPrimary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Manage", color = AmberPrimary, fontSize = 12.sp)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Search filter field
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = { Text("Filter chapters or novels...", color = TextMuted, fontSize = 12.sp) },
-                leadingIcon = {
-                    Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(18.dp))
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotBlank()) {
-                        IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(20.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                },
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = TextPrimary,
-                    unfocusedTextColor = TextPrimary,
-                    focusedBorderColor = AmberPrimary,
-                    unfocusedBorderColor = ObsidianSurfaceVariant
-                ),
-                shape = RoundedCornerShape(10.dp),
-                singleLine = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            if (filteredChapters.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(180.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (searchQuery.isNotBlank()) "No matching chapters found." else "No chapters currently saved in cache.\nLoad any chapter to save it here for offline reading.",
-                        color = TextMuted,
-                        fontSize = 12.sp,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 350.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    itemsIndexed(filteredChapters) { _, chapter ->
-                        val isCurrent = chapter.url == currentUrl
-                        Surface(
-                            color = if (isCurrent) AmberGlow.copy(alpha = 0.25f) else ObsidianSurfaceVariant.copy(alpha = 0.5f),
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(
-                                width = if (isCurrent) 1.5.dp else 0.dp,
-                                color = if (isCurrent) AmberPrimary else Color.Transparent
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    onSelectChapter(chapter.url)
-                                    onDismiss()
-                                }
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    if (chapter.novelTitle.isNotBlank()) {
-                                        Text(
-                                            text = chapter.novelTitle,
-                                            color = AmberPrimary,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Spacer(modifier = Modifier.height(2.dp))
-                                    }
-                                    Text(
-                                        text = chapter.chapterTitle.ifBlank { "Untitled Chapter" },
-                                        color = if (isCurrent) AmberPrimary else TextPrimary,
-                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
-                                        fontSize = 13.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    Text(
-                                        text = "${chapter.paragraphs.size} paragraphs • Last at Sentence ${chapter.lastSentenceIndex + 1}",
-                                        color = TextSecondary,
-                                        fontSize = 10.sp
-                                    )
-                                }
-
-                                if (isCurrent) {
-                                    Surface(
-                                        color = AmberPrimary,
-                                        shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier.padding(start = 8.dp)
-                                    ) {
-                                        Text(
-                                            text = "Playing",
-                                            color = ObsidianBackground,
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                        )
-                                    }
-                                } else {
-                                    Icon(
-                                        imageVector = Icons.Default.PlayArrow,
-                                        contentDescription = "Play Chapter",
-                                        tint = TextSecondary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Button(
-                onClick = onDismiss,
-                colors = ButtonDefaults.buttonColors(containerColor = ObsidianSurfaceVariant),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(42.dp)
-            ) {
-                Text("Close", color = TextPrimary, fontWeight = FontWeight.SemiBold)
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -1244,11 +1914,13 @@ fun PlaybackControlBar(
     activeSentence: Int,
     totalSentences: Int,
     playbackSpeed: Float,
+    sleepMode: SleepMode,
     hasNextChapter: Boolean,
     hasPrevChapter: Boolean,
     onPlayPause: () -> Unit,
     onSeek: (Int) -> Unit,
     onOpenSpeed: () -> Unit,
+    onOpenSleep: () -> Unit,
     onNextChapter: () -> Unit,
     onPrevChapter: () -> Unit
 ) {
@@ -1294,29 +1966,68 @@ fun PlaybackControlBar(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Clustered Speed Button Badge
-                Surface(
-                    color = ObsidianSurfaceVariant,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.clickable { onOpenSpeed() }
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                // Clustered Badges: Speed & Sleep Timer
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Speed Button Badge
+                    Surface(
+                        color = ObsidianSurfaceVariant,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.clickable { onOpenSpeed() }
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Speed,
-                            contentDescription = "Playback Speed",
-                            tint = AmberPrimary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "${playbackSpeed}x",
-                            color = TextPrimary,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Speed,
+                                contentDescription = "Playback Speed",
+                                tint = AmberPrimary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = "${playbackSpeed}x",
+                                color = TextPrimary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // Sleep / Loop Mode Badge
+                    val isSleepActive = sleepMode !is SleepMode.Off
+                    Surface(
+                        color = if (isSleepActive) AmberPrimary else ObsidianSurfaceVariant,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.clickable { onOpenSleep() }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (sleepMode is SleepMode.LoopChapter) Icons.Default.Repeat else Icons.Default.Bedtime,
+                                contentDescription = "Sleep Timer",
+                                tint = if (isSleepActive) ObsidianBackground else AmberPrimary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            if (isSleepActive) {
+                                Spacer(modifier = Modifier.width(3.dp))
+                                val badgeText = when (sleepMode) {
+                                    is SleepMode.LoopChapter -> "Loop 1x"
+                                    is SleepMode.PlayNChapters -> "${sleepMode.remainingChapters}ch"
+                                    is SleepMode.Off -> ""
+                                }
+                                Text(
+                                    text = badgeText,
+                                    color = ObsidianBackground,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -1413,9 +2124,7 @@ fun SpeedSelectionSheet(
                     SpeedChip(
                         speed = speed,
                         isSelected = Math.abs(currentSpeed - speed) < 0.01f,
-                        onClick = {
-                            onSpeedSelected(speed)
-                        }
+                        onClick = { onSpeedSelected(speed) }
                     )
                 }
             }
@@ -1430,9 +2139,7 @@ fun SpeedSelectionSheet(
                     SpeedChip(
                         speed = speed,
                         isSelected = Math.abs(currentSpeed - speed) < 0.01f,
-                        onClick = {
-                            onSpeedSelected(speed)
-                        }
+                        onClick = { onSpeedSelected(speed) }
                     )
                 }
             }
@@ -1443,7 +2150,9 @@ fun SpeedSelectionSheet(
                 onClick = onDismiss,
                 colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
                 shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.fillMaxWidth().height(42.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(42.dp)
             ) {
                 Text("Done", color = ObsidianBackground, fontWeight = FontWeight.Bold)
             }
@@ -1477,7 +2186,10 @@ fun SpeedChip(
 }
 
 @Composable
-fun EmptyStateView(onPasteTextClick: () -> Unit) {
+fun EmptyStateView(
+    onPasteTextClick: () -> Unit,
+    onOpenUrlClick: () -> Unit
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1499,17 +2211,29 @@ fun EmptyStateView(onPasteTextClick: () -> Unit) {
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Paste any web novel chapter link in the bar above or paste text directly to start listening.",
+                text = "Paste any web novel chapter link or paste raw text to start listening.",
                 color = TextSecondary,
                 fontSize = 13.sp,
                 textAlign = TextAlign.Center
             )
             Spacer(modifier = Modifier.height(20.dp))
-            OutlinedButton(
-                onClick = onPasteTextClick,
-                border = androidx.compose.foundation.BorderStroke(1.dp, AmberPrimary)
-            ) {
-                Text("Paste Story Text", color = AmberPrimary)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(
+                    onClick = onOpenUrlClick,
+                    colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary)
+                ) {
+                    Icon(Icons.Default.AddLink, contentDescription = null, tint = ObsidianBackground, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Load URL", color = ObsidianBackground, fontWeight = FontWeight.Bold)
+                }
+                OutlinedButton(
+                    onClick = onPasteTextClick,
+                    border = BorderStroke(1.dp, AmberPrimary)
+                ) {
+                    Icon(Icons.Default.EditNote, contentDescription = null, tint = AmberPrimary, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Paste Text", color = AmberPrimary)
+                }
             }
         }
     }

@@ -12,7 +12,9 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.tts.reader.MainActivity
@@ -123,9 +125,38 @@ class PlaybackService : Service() {
                 override fun onStop() {
                     stopServiceAndNotification()
                 }
+
+                override fun onSeekTo(pos: Long) {
+                    audioPipeline.seekToSentence(pos.toInt())
+                }
             })
             isActive = true
         }
+        updateMediaSessionState(isPlaying = false)
+    }
+
+    private fun updateMediaSessionState(isPlaying: Boolean) {
+        val state = if (isPlaying) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+        val actions = PlaybackStateCompat.ACTION_PLAY or
+                PlaybackStateCompat.ACTION_PAUSE or
+                PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+                PlaybackStateCompat.ACTION_STOP or
+                PlaybackStateCompat.ACTION_SEEK_TO
+
+        val playbackState = PlaybackStateCompat.Builder()
+            .setActions(actions)
+            .setState(state, audioPipeline.activeSentenceIndex.value.toLong(), 1.0f)
+            .build()
+        mediaSession?.setPlaybackState(playbackState)
+
+        val metadata = MediaMetadataCompat.Builder()
+            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentChapterTitle)
+            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentNovelTitle)
+            .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, currentNovelTitle)
+            .build()
+        mediaSession?.setMetadata(metadata)
     }
 
     private fun createNotificationChannel() {
@@ -133,10 +164,11 @@ class PlaybackService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Novel Reading Playback",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description = "Controls for offline background novel reading"
                 setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
@@ -147,6 +179,7 @@ class PlaybackService : Service() {
         currentNovelTitle = novelTitle
         currentChapterTitle = chapterTitle
 
+        updateMediaSessionState(isPlaying)
         val notification = buildNotification(isPlaying)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
@@ -162,6 +195,7 @@ class PlaybackService : Service() {
 
     fun updateNotification(isPlaying: Boolean) {
         if (!isForegroundActive) return
+        updateMediaSessionState(isPlaying)
         val notification = buildNotification(isPlaying)
         if (isPlaying) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -228,6 +262,8 @@ class PlaybackService : Service() {
                 androidx.media.app.NotificationCompat.MediaStyle()
                     .setMediaSession(mediaSession?.sessionToken)
                     .setShowActionsInCompactView(0, 1, 2)
+                    .setShowCancelButton(true)
+                    .setCancelButtonIntent(createActionPendingIntent(ACTION_STOP))
             )
             .setOngoing(isPlaying)
             .build()
@@ -242,6 +278,10 @@ class PlaybackService : Service() {
         audioPipeline.stop()
         releaseWakeLock()
         isForegroundActive = false
+        val stopState = PlaybackStateCompat.Builder()
+            .setState(PlaybackStateCompat.STATE_STOPPED, 0, 1.0f)
+            .build()
+        mediaSession?.setPlaybackState(stopState)
         stopForeground(STOP_FOREGROUND_REMOVE)
         val manager = getSystemService(NotificationManager::class.java)
         manager.cancel(NOTIFICATION_ID)

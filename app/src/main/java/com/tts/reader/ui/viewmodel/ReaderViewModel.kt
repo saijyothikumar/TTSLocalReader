@@ -18,6 +18,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+sealed class SleepMode {
+    object Off : SleepMode()
+    data class LoopChapter(val hasLoopedOnce: Boolean = false) : SleepMode()
+    data class PlayNChapters(val totalChapters: Int, val remainingChapters: Int) : SleepMode()
+}
+
 data class ReaderUiState(
     val isLoading: Boolean = false,
     val novelTitle: String = "",
@@ -32,13 +38,17 @@ data class ReaderUiState(
     val pitch: Float = 1.0f,
     val selectedVoiceName: String? = null,
     val availableVoices: List<String> = emptyList(),
+    val currentEngineLabel: String = "System Default",
+    val availableEngines: List<Pair<String, String>> = emptyList(),
+    val speechClarityMode: Boolean = true,
     val nextChapterUrl: String? = null,
     val prevChapterUrl: String? = null,
     val cachedChapterCount: Int = 0,
     val cachedChapters: List<ChapterEntity> = emptyList(),
     val errorMessage: String? = null,
     val infoMessage: String? = null,
-    val captchaChallengeUrl: String? = null
+    val captchaChallengeUrl: String? = null,
+    val sleepMode: SleepMode = SleepMode.Off
 )
 
 class ReaderViewModel(application: Application) : AndroidViewModel(application) {
@@ -52,6 +62,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
+
+    private var infoDismissJob: kotlinx.coroutines.Job? = null
 
     init {
         // Collect cached chapters from Room DB
@@ -79,6 +91,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
+        // Auto advance / loop / sleep when audio completes
+        audioPipeline.onChapterCompletedListener = {
+            handleChapterCompleted()
+        }
+
         // Load available installed system TTS voices
         viewModelScope.launch {
             delay(500) // Allow TextToSpeech engine time to complete initialization
@@ -90,11 +107,45 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         try {
             val voices = TTSApp.instance.systemTts.getAvailableVoices().map { it.name }
             val current = TTSApp.instance.systemTts.getCurrentVoiceName()
+            val engineLabel = TTSApp.instance.systemTts.getCurrentEngineLabel()
+            val engines = TTSApp.instance.systemTts.getAvailableEngines()
             _uiState.value = _uiState.value.copy(
                 availableVoices = voices,
-                selectedVoiceName = current
+                selectedVoiceName = current,
+                currentEngineLabel = engineLabel,
+                availableEngines = engines,
+                speechClarityMode = TTSApp.instance.systemTts.speechClarityMode
             )
         } catch (_: Exception) {}
+    }
+
+    fun setSpeechClarityMode(enabled: Boolean) {
+        TTSApp.instance.systemTts.speechClarityMode = enabled
+        _uiState.value = _uiState.value.copy(speechClarityMode = enabled)
+        val modeName = if (enabled) "Speech Clarity Mode (Bypasses Equalizers)" else "Standard Media Audio"
+        showTemporaryInfo("Audio profile: $modeName")
+    }
+
+    fun switchTtsEngine(enginePackage: String) {
+        _uiState.value = _uiState.value.copy(isLoading = true)
+        TTSApp.instance.systemTts.switchEngine(enginePackage) { success ->
+            viewModelScope.launch {
+                loadInstalledVoices()
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    currentEngineLabel = TTSApp.instance.systemTts.getCurrentEngineLabel()
+                )
+                if (success) {
+                    showTemporaryInfo("Switched to ${TTSApp.instance.systemTts.getCurrentEngineLabel()}")
+                } else {
+                    _uiState.value = _uiState.value.copy(errorMessage = "Could not activate selected TTS engine.")
+                }
+            }
+        }
+    }
+
+    fun openSystemTtsSettings(context: android.content.Context) {
+        TTSApp.instance.systemTts.openSystemTtsSettings(context)
     }
 
     fun setSystemVoice(voiceName: String) {
@@ -114,7 +165,93 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.value = _uiState.value.copy(playbackSpeed = speed)
     }
 
+    fun scheduleInfoMessageDismiss() {
+        infoDismissJob?.cancel()
+        infoDismissJob = viewModelScope.launch {
+            delay(3500)
+            _uiState.value = _uiState.value.copy(infoMessage = null)
+        }
+    }
+
+    fun showTemporaryInfo(msg: String) {
+        _uiState.value = _uiState.value.copy(infoMessage = msg)
+        scheduleInfoMessageDismiss()
+    }
+
+    fun cancelSleepMode() {
+        setSleepMode(SleepMode.Off)
+    }
+
+    fun setSleepMode(mode: SleepMode) {
+        _uiState.value = _uiState.value.copy(sleepMode = mode)
+        val msg = when (mode) {
+            is SleepMode.Off -> "Sleep timer turned off."
+            is SleepMode.LoopChapter -> "Chapter set to loop once then sleep."
+            is SleepMode.PlayNChapters -> "Will play ${mode.remainingChapters} chapter(s) then sleep."
+        }
+        _uiState.value = _uiState.value.copy(infoMessage = msg)
+        scheduleInfoMessageDismiss()
+    }
+
+    fun enterSleep() {
+        audioPipeline.stop()
+        PlaybackService.stopPlayback(getApplication())
+        _uiState.value = _uiState.value.copy(
+            sleepMode = SleepMode.Off,
+            infoMessage = "Sleep mode activated. Playback stopped."
+        )
+        scheduleInfoMessageDismiss()
+    }
+
+    private fun handleChapterCompleted() {
+        when (val mode = _uiState.value.sleepMode) {
+            is SleepMode.LoopChapter -> {
+                if (!mode.hasLoopedOnce) {
+                    _uiState.value = _uiState.value.copy(
+                        sleepMode = SleepMode.LoopChapter(hasLoopedOnce = true),
+                        infoMessage = "Looping chapter once before sleep."
+                    )
+                    scheduleInfoMessageDismiss()
+                    seekToSentence(0)
+                    PlaybackService.startPlayback(
+                        getApplication(),
+                        _uiState.value.novelTitle,
+                        _uiState.value.chapterTitle
+                    )
+                    audioPipeline.play()
+                } else {
+                    enterSleep()
+                }
+            }
+            is SleepMode.PlayNChapters -> {
+                val remaining = mode.remainingChapters - 1
+                if (remaining <= 0) {
+                    enterSleep()
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        sleepMode = mode.copy(remainingChapters = remaining),
+                        infoMessage = "$remaining chapter(s) remaining before sleep."
+                    )
+                    scheduleInfoMessageDismiss()
+                    val next = _uiState.value.nextChapterUrl
+                    if (!next.isNullOrBlank()) {
+                        loadUrl(next, autoPlay = true)
+                    } else {
+                        enterSleep()
+                    }
+                }
+            }
+            is SleepMode.Off -> {
+                val next = _uiState.value.nextChapterUrl
+                if (!next.isNullOrBlank()) {
+                    loadUrl(next, autoPlay = true)
+                }
+            }
+        }
+    }
+
     fun clearInfoMessage() {
+        infoDismissJob?.cancel()
         _uiState.value = _uiState.value.copy(infoMessage = null)
     }
 
@@ -134,7 +271,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun loadUrl(url: String) {
+    fun loadUrl(url: String, autoPlay: Boolean = false) {
         val trimmedUrl = url.trim()
         if (trimmedUrl.isBlank()) return
 
@@ -151,6 +288,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.value = _uiState.value.copy(
                 infoMessage = "This chapter is already open."
             )
+            scheduleInfoMessageDismiss()
             return
         }
 
@@ -169,7 +307,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                         url = cached.url,
                         nextUrl = cached.nextChapterUrl,
                         prevUrl = cached.prevChapterUrl,
-                        startIndex = cached.lastSentenceIndex
+                        startIndex = cached.lastSentenceIndex,
+                        autoPlay = autoPlay
                     )
                     _uiState.value = _uiState.value.copy(isLoading = false)
                     // Continue prefetch chain for subsequent chapters
@@ -198,7 +337,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                     url = trimmedUrl,
                     nextUrl = scraped.nextChapterUrl,
                     prevUrl = scraped.prevChapterUrl,
-                    startIndex = 0
+                    startIndex = 0,
+                    autoPlay = autoPlay
                 )
 
                 scraped.nextChapterUrl?.let { prefetchNextChapters(it) }
@@ -240,7 +380,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             url = "local_paste_${System.currentTimeMillis()}",
             nextUrl = null,
             prevUrl = null,
-            startIndex = 0
+            startIndex = 0,
+            autoPlay = false
         )
     }
 
@@ -251,7 +392,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         url: String,
         nextUrl: String?,
         prevUrl: String?,
-        startIndex: Int
+        startIndex: Int,
+        autoPlay: Boolean = false
     ) {
         val allSentences = mutableListOf<String>()
         val sentenceMap = mutableListOf<Int>()
@@ -290,6 +432,15 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             nextChapterUrl = nextUrl,
             prevChapterUrl = prevUrl
         )
+
+        if (autoPlay && allSentences.isNotEmpty()) {
+            PlaybackService.startPlayback(
+                getApplication(),
+                novelTitle,
+                chapterTitle
+            )
+            audioPipeline.play()
+        }
     }
 
     private fun isCorruptedChapter(chapter: ChapterEntity): Boolean {
@@ -381,21 +532,21 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun nextChapter() {
         val next = _uiState.value.nextChapterUrl
         if (!next.isNullOrBlank()) {
-            loadUrl(next)
+            loadUrl(next, autoPlay = _uiState.value.isPlaying)
         }
     }
 
     fun prevChapter() {
         val prev = _uiState.value.prevChapterUrl
         if (!prev.isNullOrBlank()) {
-            loadUrl(prev)
+            loadUrl(prev, autoPlay = _uiState.value.isPlaying)
         }
     }
 
     fun selectChapter(url: String) {
         audioPipeline.stop()
         PlaybackService.stopPlayback(getApplication())
-        loadUrl(url)
+        loadUrl(url, autoPlay = false)
     }
 
     fun deleteCurrentChapter() {
@@ -406,13 +557,15 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             viewModelScope.launch(Dispatchers.IO) {
                 chapterDao.deleteChapter(url)
                 _uiState.value = ReaderUiState(
-                    infoMessage = "Current chapter removed from local cache."
+                    infoMessage = "Current chapter removed from storage."
                 )
+                scheduleInfoMessageDismiss()
             }
         } else {
             _uiState.value = ReaderUiState(
                 infoMessage = "Current content cleared."
             )
+            scheduleInfoMessageDismiss()
         }
     }
 
@@ -424,8 +577,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             chapterDao.deleteChapter(url)
             _uiState.value = _uiState.value.copy(
-                infoMessage = "Chapter removed from cache."
+                infoMessage = "Chapter removed from storage."
             )
+            scheduleInfoMessageDismiss()
         }
     }
 
@@ -440,13 +594,33 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             chapterDao.deleteChapters(urls)
             if (containsCurrent) {
                 _uiState.value = ReaderUiState(
-                    infoMessage = "Deleted ${urls.size} chapter(s) from cache."
+                    infoMessage = "Deleted ${urls.size} chapter(s) from storage."
                 )
             } else {
                 _uiState.value = _uiState.value.copy(
-                    infoMessage = "Deleted ${urls.size} chapter(s) from cache."
+                    infoMessage = "Deleted ${urls.size} chapter(s) from storage."
                 )
             }
+            scheduleInfoMessageDismiss()
+        }
+    }
+
+    fun deleteNovelFolder(novelTitle: String, urls: List<String>) {
+        if (urls.isEmpty()) return
+        val containsCurrent = urls.contains(_uiState.value.currentUrl)
+        if (containsCurrent) {
+            audioPipeline.stop()
+            PlaybackService.stopPlayback(getApplication())
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            chapterDao.deleteChapters(urls)
+            val msg = "Deleted '$novelTitle' (${urls.size} chapters)."
+            if (containsCurrent) {
+                _uiState.value = ReaderUiState(infoMessage = msg)
+            } else {
+                _uiState.value = _uiState.value.copy(infoMessage = msg)
+            }
+            scheduleInfoMessageDismiss()
         }
     }
 
@@ -456,8 +630,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             chapterDao.clearAllChapters()
             _uiState.value = ReaderUiState(
-                infoMessage = "All cached chapters cleared from local storage."
+                infoMessage = "All saved chapters cleared from local storage."
             )
+            scheduleInfoMessageDismiss()
         }
     }
 

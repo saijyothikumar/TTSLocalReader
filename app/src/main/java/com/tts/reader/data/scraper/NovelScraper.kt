@@ -88,6 +88,22 @@ class NovelScraper {
         }
     }
 
+    private fun isPrivateOrLocalHost(host: String): Boolean {
+        val cleanHost = host.lowercase().trim()
+        if (cleanHost == "localhost" || cleanHost.endsWith(".local") || cleanHost.endsWith(".internal")) {
+            return true
+        }
+        // IPv4 regex checks for loopback (127.0.0.0/8), zero (0.0.0.0/8), private (10/8, 192.168/16, 172.16-31/12), link-local (169.254/16), CGNAT (100.64-127/10)
+        if (cleanHost.matches(Regex("^(127\\.|0\\.|10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[0-1])\\.|169\\.254\\.|100\\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\\.).*"))) {
+            return true
+        }
+        // IPv6 loopback, link-local, unique local, IPv4-mapped
+        if (cleanHost == "::1" || cleanHost.startsWith("fe80:") || cleanHost.startsWith("fc00:") || cleanHost.startsWith("fd00:") || cleanHost.startsWith("::ffff:")) {
+            return true
+        }
+        return false
+    }
+
     fun validatePublicUrl(urlString: String) {
         val uri = try {
             java.net.URI(urlString)
@@ -102,14 +118,8 @@ class NovelScraper {
 
         val host = uri.host?.lowercase() ?: throw IllegalArgumentException("Missing host in URL: $urlString")
 
-        // Reject localhost and local machine interfaces
-        if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host.endsWith(".local") || host.endsWith(".internal")) {
-            throw SecurityException("Access to local address is prohibited: $host")
-        }
-
-        // Reject private IPv4 address blocks (RFC 1918 / RFC 3927)
-        if (host.matches(Regex("^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[0-1])\\.|169\\.254\\.).*"))) {
-            throw SecurityException("Access to private intranet IP ranges is prohibited: $host")
+        if (isPrivateOrLocalHost(host)) {
+            throw SecurityException("Access to local/private network addresses is strictly prohibited: $host")
         }
 
         val path = uri.path?.lowercase() ?: ""
@@ -140,11 +150,7 @@ class NovelScraper {
 
         val host = uri.host?.lowercase() ?: return false
 
-        // SSRF protection: reject localhost and private IP addresses
-        if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host.endsWith(".local") || host.endsWith(".internal")) {
-            return false
-        }
-        if (host.matches(Regex("^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[0-1])\\.|169\\.254\\.).*"))) {
+        if (isPrivateOrLocalHost(host)) {
             return false
         }
 
@@ -250,12 +256,13 @@ class NovelScraper {
     }
 
     fun parseDocument(doc: Document, baseUrl: String): ScrapedChapter {
-        // 1. Strip comments, sidebars, social widgets, advertisements universally FIRST
+        // 1. Strip comments, sidebars, social widgets, scripts, iframes, advertisements universally FIRST
         val unwantedSelectors = listOf(
             "#dle-comments-list", ".comments", ".comments-tree", ".comment-list",
             "#comments", "aside", "#rightside", ".str_right", ".sidebar",
             ".sidebar-block", ".recent-comments", ".popular-block", ".top-rated",
-            ".ad-block", ".ads", "script", "style", "noscript",
+            ".ad-block", ".ads", "script", "style", "noscript", "iframe", "object",
+            "embed", "applet", "svg", "meta[http-equiv=refresh]", "link[rel=stylesheet]",
             ".soc-buttons", ".share-box", ".socials", ".rating", ".comment-form",
             "#disqus_thread", ".disqus", ".fb-comments", ".reactions",
             ".report-chapter", ".author-note-wrapper", ".ad-container",
@@ -287,12 +294,17 @@ class NovelScraper {
             ?: doc.selectFirst("article")
             ?: doc.body()
 
-        // 5. Extract Clean Paragraphs
+        // 5. Extract Clean Paragraphs (DoS protected: capped length and count)
         val paragraphs = mutableListOf<String>()
+        val maxParagraphCount = 500
+        val maxParagraphLength = 10_000
+
         val pTags = contentElement.select("p")
         if (pTags.isNotEmpty()) {
             for (p in pTags) {
-                val text = cleanParagraphText(p.text())
+                if (paragraphs.size >= maxParagraphCount) break
+                val rawText = p.text()
+                val text = cleanParagraphText(rawText.take(maxParagraphLength))
                 if (text.isNotBlank() && !isSpamOrAdLine(text)) {
                     paragraphs.add(text)
                 }
@@ -303,9 +315,13 @@ class NovelScraper {
         if (paragraphs.isEmpty()) {
             val fullText = contentElement.wholeText()
             val lines = fullText.split("\n")
-                .map { cleanParagraphText(it) }
-                .filter { it.isNotBlank() && !isSpamOrAdLine(it) }
-            paragraphs.addAll(lines)
+            for (line in lines) {
+                if (paragraphs.size >= maxParagraphCount) break
+                val text = cleanParagraphText(line.take(maxParagraphLength))
+                if (text.isNotBlank() && !isSpamOrAdLine(text)) {
+                    paragraphs.add(text)
+                }
+            }
         }
 
         // Guard against Ranobes / CMS comments-only placeholders

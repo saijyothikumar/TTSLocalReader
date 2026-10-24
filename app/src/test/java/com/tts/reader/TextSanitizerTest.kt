@@ -57,5 +57,43 @@ class TextSanitizerTest {
 
         // Excessive dashes/asterisks stripped
         assertEquals("Chapter 1", TextSanitizer.sanitizeForSpeech("--- Chapter 1 ---"))
+
+        // Dialogue tildes converted cleanly so TTS doesn't say "tilde"
+        val tildeSentence = "Wait~ What do you mean~~~?"
+        val tildeSanitized = TextSanitizer.sanitizeForSpeech(tildeSentence)
+        assertTrue(tildeSanitized != null && !tildeSanitized.contains("~"))
+        assertTrue(tildeSanitized!!.contains("Wait,"))
+
+        // LitRPG system brackets
+        val bracketSentence = "[System: Level Up! You gained 50 EXP.]"
+        val bracketSanitized = TextSanitizer.sanitizeForSpeech(bracketSentence)
+        assertTrue(bracketSanitized != null && !bracketSanitized.contains("["))
+        assertTrue(bracketSanitized!!.contains("System: Level Up! You gained 50 EXP."))
+
+        // HTML entities unescaped
+        val htmlSentence = "It&rsquo;s &quot;done&quot; &amp; ready."
+        val htmlSanitized = TextSanitizer.sanitizeForSpeech(htmlSentence)
+        assertEquals("It's \"done\" and ready.", htmlSanitized)
+
+        // Full-width Asian punctuation
+        val asianSentence = "「Hello」 said John。 Are you okay？"
+        val asianSanitized = TextSanitizer.sanitizeForSpeech(asianSentence)
+        assertEquals("\"Hello\" said John. Are you okay?", asianSanitized)
+
+        // Action asterisks and italics
+        val actionSentence = "She sighed. *gasps* \"What is that?!\""
+        val actionSanitized = TextSanitizer.sanitizeForSpeech(actionSentence)
+        assertTrue(actionSanitized != null && !actionSanitized.contains("*"))
+        assertTrue(actionSanitized!!.contains("gasps"))
+
+        // Em-dash converted to natural speech pause comma
+        val dashSentence = "He turned—and saw the dragon."
+        val dashSanitized = TextSanitizer.sanitizeForSpeech(dashSentence)
+        assertEquals("He turned, and saw the dragon.", dashSanitized)
+
+        // Excessive dots normalized
+        val dotsSentence = "Wait..... He is here."
+        val dotsSanitized = TextSanitizer.sanitizeForSpeech(dotsSentence)
+        assertTrue(dotsSanitized != null && dotsSanitized.contains("..."))
     }
 }

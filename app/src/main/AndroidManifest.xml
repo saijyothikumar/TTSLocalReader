@@ -11,6 +11,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Package visibility queries for Text-to-Speech engines (Google Speech Services, etc.) -->
+    <queries>
+        <package android:name="com.google.android.tts" />
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".TTSApp"
         android:allowBackup="true"

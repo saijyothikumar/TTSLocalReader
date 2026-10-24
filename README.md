@@ -1,56 +1,119 @@
-# TTS Local Reader 🎧📖
+# TTS Local Reader
 
-A lightweight, 100% offline Text-to-Speech (TTS) web novel reader for Android. Designed for long-form reading with zero-gap audio playback, intelligent text sanitization, and seamless chapter prefetching.
+[![Android](https://img.shields.io/badge/Platform-Android%209.0%2B%20(API%2028%2B)-3DDC84?logo=android&logoColor=white)](#)
+[![Kotlin](https://img.shields.io/badge/Kotlin-1.9.24-7F52FF?logo=kotlin&logoColor=white)](#)
+[![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?logo=jetpackcompose&logoColor=white)](#)
+[![APK Size](https://img.shields.io/badge/APK%20Size-2.67%20MB-F59E0B)](#)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
----
-
-## 🌟 Features
-
-- **⚡ 100% Offline, Zero-Setup TTS**: Built directly on Android's native `TextToSpeech` engine. Works immediately on first launch with **0 MB downloads** and zero setup.
-- **🔇 Intelligent Text Sanitizer**: Automatically detects and completely silences horizontal visual dividers (`-------`, `***`, `===`, `~*~*~`) and author/translator notes (`Author's Note`, `TL Note`, `A/N:`) during speech playback. The reading interface renders dividers as elegant glowing amber glyphs (`✦`).
-- **⏩ Multi-Step Lookahead Prefetching**: Prefetches both Next ($N+1$) and Next-Next ($N+2$) chapters in the background with human-like cadence, ensuring instant, lag-free chapter transitions.
-- **🔄 Continuous Zero-Gap Playback**: Continuous lookahead paragraph queuing eliminates the awkward 1–2 second silence between paragraphs found in typical TTS apps.
-- **🎯 Synchronized Reading UI**: Sample-accurate sentence highlighting synced with the audio playhead and automatic auto-scrolling.
-- **🛡️ Bot Protection Solver**: In-app Obsidian Amber styled challenge sheet to solve Cloudflare Turnstile / Bot challenges, automatically syncing clearance cookies to OkHttp.
-- **📱 Background Playback**: Android Foreground Service with `MediaSessionCompat` lock screen controls and partial wake-locks for screen-off reading.
-- **🎨 Obsidian Amber Theme**: Premium eye-friendly dark mode interface (`#121214` background, `#1E1E24` cards, and warm glowing `#F59E0B` amber accents).
-- **⚙️ Voice & Reading Controls**: Quick speed presets (0.75x, 1.0x, 1.25x, 1.5x, 2.0x), fine-tuned pitch slider, and selector for all installed system voices.
+A lightweight, 100% offline Text-to-Speech (TTS) novel reader for Android. Built natively with Jetpack Compose and Android's built-in `TextToSpeech` engine, TTS Local Reader delivers zero-gap paragraph streaming, vocal clarity enhancement, smart web novel scraping, and sleep timers with zero idle battery drain.
 
 ---
 
-## 📱 How to Build
+## Key Features
 
-### Using Android Studio
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/saijyothikumar/TTSLocalReader.git
-   ```
-2. Open the project folder in **Android Studio**.
-3. Allow Gradle to sync.
-4. Run on an Android device or emulator (API 28+ / Android 9.0+).
+### 100% Offline, Zero-Setup TTS
+- Operates entirely on Android's built-in `TextToSpeech` engine.
+- Functions immediately on first launch with **0 MB downloads**, zero network latency, and no heavy runtime dependencies.
+- Discovers and prioritizes high-definition local neural voice packages (e.g., Google Speech Services).
 
-### Using the Command Line
+### Speech Clarity Mode (DSP Bypass)
+- Routes speech with `AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY` and `CONTENT_TYPE_SPEECH`.
+- Explicitly signals device hardware DSPs (such as Vivo/iQOO DeepField, Dolby Atmos, and Super Audio) to bypass music equalization, artificial stereo widening, and muffled bass boosts that degrade speech legibility.
+- In-app engine switcher and direct intent shortcut to Android System TTS settings.
+
+### OriginOS 6 & System Lock Screen Media Controls
+- Full Android Foreground Service integration with `MediaSessionCompat`.
+- Lock-screen and control-center media playback widgets hardened for OriginOS 6, FuntouchOS, and standard Android devices.
+- Continuous synchronization of `PlaybackStateCompat` supporting Play, Pause, Previous, Next, and Stop.
+- Automatic service teardown and notification dismissal on swipe (`onTaskRemoved`).
+
+### Sleep & Loop Timer (Zero-Battery Deep Sleep Guarantee)
+- **Continuous**: Normal queue playback across chapters.
+- **Loop Chapter Once**: Replays the current chapter a single time before sleeping.
+- **Play $N$ Chapters**: Seamlessly advances through $N$ chapters before triggering sleep.
+- **Dynamic Switching**: Change modes on the fly (e.g. switch to Loop on chapter 2 of 3 to loop that chapter once and stop).
+- **Deep Sleep Guarantee**: When sleep triggers, the app stops the audio pipeline, releases partial wake-locks, dismisses the notification, stops the foreground service, and abandons audio focus, allowing Android OS to enter low-power deep sleep.
+
+### Intelligent Text Sanitization
+- **Divider Detection**: Visual horizontal rules (`-------`, `***`, `===`, `~*~*~`) are rendered as glowing amber glyphs (`✦`) in the reader UI and completely silenced during audio playback.
+- **Author & Translator Notes**: Automatically identifies and silences boilerplate (`Author's Note`, `TL Note`, `A/N:`).
+- **Web Artifact Cleaning**: Unescapes residual HTML entities, standardizes full-width Asian punctuation, cleans LitRPG system brackets (`[System: ...]`), converts dialogue em-dashes and tildes into natural speech pauses, and strips action asterisks/underscores (`*sigh*` &rarr; `sigh`).
+
+### Universal Novel Extractor & Folder Storage
+- Scrapes web novels (Ranobes, Light Novel Pub, FreeWebNovel, etc.) while stripping site chrome, navigation menus, and comments.
+- Automatic novel categorization ([NovelIdentifier.kt](file:///app/src/main/java/com/tts/reader/data/scraper/NovelIdentifier.kt)) groups chapters into collapsible novel folders.
+- Local SQLite / Room Database caching with multi-step ($N+1, N+2$) background lookahead prefetching.
+- In-app Cloudflare solver sheet with synchronized WebView session cookies.
+
+### Obsidian Amber Reading UI
+- Clean, eye-friendly dark palette (`#121214` background, `#1E1E24` elevated surfaces, `#F59E0B` warm amber accent).
+- Synchronized, millisecond-accurate sentence highlighting with auto-scroll.
+- Auto-hiding URL bar and single-tap focus dismissal: tapping paragraphs, the viewport, or scrolling immediately dismisses the software keyboard.
+
+---
+
+## APK Downloads
+
+Pre-built APKs are located in the project build outputs:
+
+| Variant | File Location | Size | Description |
+| :--- | :--- | :--- | :--- |
+| **Release (Recommended)** | `app/build/outputs/apk/release/app-release.apk` | **2.67 MB** | R8 tree-shaken and resource-shrunk production build. Signed with debug keys for immediate sideloading. |
+| **Debug** | `app/build/outputs/apk/debug/app-debug.apk` | 54.85 MB | Full unminified debug APK with detailed symbol tables and developer logging. |
+
+> [!TIP]
+> For testing on a physical device, transfer **`app-release.apk`** (2.67 MB) to your phone or install via ADB:
+> ```powershell
+> adb install -r app\build\outputs\apk\release\app-release.apk
+> ```
+
+---
+
+## Building from Source
+
+### Prerequisites
+- **Android SDK**: API 34+ / Build-Tools 34.0.0+
+- **JDK**: Eclipse Adoptium OpenJDK 21 LTS (`JAVA_HOME` pointing to JDK 21)
+- **Gradle**: 9.3.1 (wrapper included)
+
+### Build Commands
+
 ```powershell
-# Windows
+# Build optimized release APK (2.67 MB)
+.\gradlew.bat assembleRelease
+
+# Build debug APK
 .\gradlew.bat assembleDebug
 
-# Linux / macOS
-./gradlew assembleDebug
+# Run unit tests
+.\gradlew.bat test
 ```
-The compiled APK will be generated at:
-`app/build/outputs/apk/debug/app-debug.apk`
+
+> [!NOTE]
+> If building on Windows inside a synced folder (such as OneDrive), ensure the Gradle daemon is stopped after builds (`.\gradlew.bat --stop`) to prevent transient file lock collisions on build directories.
 
 ---
 
-## 📂 Architecture
+## Project Structure
 
-- **`data/scraper`**: Universal web novel extractor (`NovelScraper`), divider/note speech filter (`TextSanitizer`), and challenge exceptions.
-- **`data/local`**: Offline Room Database (`AppDatabase`, `ChapterEntity`, `ChapterDao`) for chapter storage and reading progress.
-- **`tts`**: Double-buffered lookahead sentence queue (`AudioStreamPipeline`) and native Android TTS wrapper (`SystemTtsEngine`).
-- **`service`**: Android Foreground Service (`PlaybackService`) with media notification and wake-lock management.
-- **`ui`**: Jetpack Compose UI (`ReaderScreen`, `ReaderViewModel`, `CaptchaSolverSheet`) in the Obsidian Amber theme.
-
----
-
-## 📄 License
-This project is open-source and available under the [MIT License](LICENSE).
+```
+app/src/main/java/com/tts/reader/
+├── TTSApp.kt                     # Application class & global engine lifecycle
+├── data/
+│   ├── local/                    # Room Database (AppDatabase, ChapterEntity, ChapterDao)
+│   └── scraper/                  # NovelScraper, TextSanitizer, NovelIdentifier
+├── service/
+│   └── PlaybackService.kt        # Foreground Media Playback Service & MediaSessionCompat
+├── tts/
+│   ├── AudioStreamPipeline.kt    # Lookahead sentence queue & audio focus management
+│   └── SystemTtsEngine.kt        # Android TextToSpeech wrapper, clarity mode & engine switcher
+└── ui/
+    ├── screens/
+    │   ├── ReaderScreen.kt       # Obsidian Amber reader view, dialogs, folder storage
+    │   ├── SleepModeSheet.kt     # Sleep & loop timer configuration sheet
+    │   └── CaptchaSolverSheet.kt # Embedded Cloudflare challenge solver
+    ├── theme/                    # Color, Typography, and Theme definitions
+    └── viewmodel/
+        └── ReaderViewModel.kt    # StateFlow presentation model & playback coordination
+```

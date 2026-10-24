@@ -51,4 +51,36 @@ A lightweight, offline-first Text-to-Speech (TTS) application targeting Android 
     6. `parseDocument` actively detects and rejects *"This page is for comments only"* placeholders with `IllegalStateException`.
     7. `ReaderViewModel` automatically purges any previously corrupted comments chapter from the local Room database cache and protects prefetch chaining.
     8. `CaptchaSolverSheet` blocks navigation to `/comments/` and ignores comments URLs when checking challenge completion.
+- **OriginOS 6 (iQOO Neo 7 Pro) Media Notification Widget Suppression**:
+  - *Root Cause*: OriginOS 6 filters media playback widgets out of the Lock Screen and Control Center if the notification channel is initialized with `IMPORTANCE_LOW` (classified as silent), or if `MediaSessionCompat` fails to continuously report a valid `PlaybackStateCompat` (`STATE_PLAYING`/`STATE_PAUSED` with explicit actions `ACTION_PLAY_PAUSE`, `ACTION_SKIP_TO_NEXT`, `ACTION_SKIP_TO_PREVIOUS`, `ACTION_SEEK_TO`), or if `MediaMetadataCompat` lacks duration/metadata keys.
+  - *Fix & Verified Pattern*:
+    1. Channel configured with `NotificationManager.IMPORTANCE_DEFAULT` and `lockscreenVisibility = Notification.VISIBILITY_PUBLIC`.
+    2. Continuous synchronization of `MediaSessionCompat.setPlaybackState()` whenever playback starts, pauses, or seeks.
+    3. `NotificationCompat.MediaStyle` explicitly binds `setMediaSession(mediaSession.sessionToken)` with actions `[0, 1, 2]` and cancel button intent.
+    4. Clean `PlaybackStateCompat.STATE_STOPPED` teardown before notification dismissal.
+- **Inbuilt Voice Audio Clarity & Vocal Frequency Preservation**:
+  - *Root Cause*: Device DSPs, Dolby Atmos, and sound equalizers on devices like iQOO/Vivo treat raw Android `TextToSpeech` output as generic media or alert tones, applying aggressive bass boost and spatial distortion that muffles vocal frequencies. Additionally, on Android 11+ (API 30+), apps cannot discover Google Speech Services (`com.google.android.tts`) without explicit `<queries>` declarations, causing fallback to low-quality OEM engines.
+  - *Fix & Verified Pattern*:
+    1. Added `<queries>` for `<package android:name="com.google.android.tts" />` and `<intent><action android:name="android.intent.action.TTS_SERVICE" /></intent></queries>` in `AndroidManifest.xml`.
+    2. Implemented `speechClarityMode` routing speech with `AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY` + `CONTENT_TYPE_SPEECH` to explicitly instruct OS hardware DSPs to bypass music enhancement filters, stereo widening, and muffled bass boosts.
+    3. Filtered out voices marked with `KEY_FEATURE_NOT_INSTALLED` or `isNetworkConnectionRequired`, automatically selecting high-definition/neural local voice packs.
+    4. Provided an in-app engine picker and direct intent shortcut to Android System TTS settings in `VoiceSettingsSheet`.
+- **Android CLI Tooling & Environment Standards**:
+  - Official Google `android` CLI is installed at `%USERPROFILE%\AppData\AndroidCLI\android.exe`.
+  - When running Gradle commands or `android describe`, explicitly set `JAVA_HOME=C:\Users\saiku\.gradle\jdks\eclipse_adoptium-21-amd64-windows.2` to ensure Kotlin 1.9.24 / KSP compiler compatibility.
+  - Official Android developer documentation can be queried via `android docs search "<topic>"` and fetched via `android docs fetch "kb://..."`.
+- **Reading UI Keyboard Auto-Dismissal & Clean Viewport**:
+  - *Root Cause*: Permanent inline URL TextField retained focus and kept the software keyboard active, with no tap handlers on reading viewport containers or paragraphs to request `clearFocus()`.
+  - *Fix & Verified Pattern*:
+    1. Auto-hide URL bar on reading screen once chapter paragraphs are loaded (`paragraphs.isNotEmpty()`), migrating manual URL entry to a dedicated `AddLink` dialog.
+    2. Universal `LocalFocusManager.clearFocus()` and `LocalSoftwareKeyboardController.hide()` wired to reading view background tap gestures, `ParagraphCard.onClick`, spoken title tap, and `listState.isScrollInProgress`.
+    3. All TextFields enforce `ImeAction.Done` with auto-dismiss actions.
+- **Sleep & Loop Mode State Machine (Zero-Battery Deep Sleep Guarantee)**:
+  - Supports Continuous (Timer Off), Loop Current Chapter Once, and Play $N$ Chapters before sleep.
+  - Dynamic mode switching: If set to Play 3 chapters, and switched to Loop on chapter 2, it loops chapter 2 once and enters sleep.
+  - `enterSleep()` teardown: Completely stops audio pipeline, stops Foreground Service, dismisses notification, releases partial wake-locks, and abandons audio focus, allowing Android OS to enter deep sleep without battery drain.
+- **Novel Categorization & Folder Storage (`NovelIdentifier`)**:
+  - Scraped chapters from multiple sources and mirrors are normalized by stripping site suffixes (`- Ranobes`, `- Light Novel Pub`, etc.) and extracting canonical novel keys.
+  - Storage dialog and library group chapters into collapsible novel folder cards with folder-level deletion and chapter-level deletion, protected by confirmation dialogs.
+  - 1-tap chapter URL copy with 3.5s auto-dismissing info banner.
 

@@ -1,9 +1,13 @@
 package com.tts.reader.tts
 
 import android.content.Context
+import android.content.Intent
+import android.media.AudioAttributes
 import android.os.Bundle
+import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,6 +22,20 @@ class SystemTtsEngine(private val context: Context) {
     private val _isReady = MutableStateFlow(false)
     val isReady: StateFlow<Boolean> = _isReady
 
+    var currentEnginePackage: String? = null
+        private set
+
+    /**
+     * When speechClarityMode is TRUE, audio output is routed using USAGE_ASSISTANCE_ACCESSIBILITY.
+     * This instructs the OS (especially devices with aggressive DSPs like Vivo/iQOO DeepX/Dolby)
+     * to bypass media music equalizers, virtual surround, and heavy bass boosts that muffle human speech.
+     */
+    var speechClarityMode: Boolean = true
+        set(value) {
+            field = value
+            applyAudioAttributes()
+        }
+
     var speed: Float = 1.0f
         set(value) {
             field = value
@@ -30,11 +48,116 @@ class SystemTtsEngine(private val context: Context) {
             tts?.setPitch(value)
         }
 
-    fun getAvailableVoices(): List<android.speech.tts.Voice> {
+    var onSentenceStartListener: ((Int) -> Unit)? = null
+    var onSentenceDoneListener: ((Int) -> Unit)? = null
+    var onChunkStartListener: ((String) -> Unit)? = null
+    var onChunkDoneListener: ((String) -> Unit)? = null
+    var onRangeStartListener: ((utteranceId: String, start: Int, end: Int) -> Unit)? = null
+    var onPlaybackCompletedListener: (() -> Unit)? = null
+
+    init {
+        initTts()
+    }
+
+    private fun resolveBestEnginePackage(): String? {
+        val googleEngine = "com.google.android.tts"
         return try {
-            tts?.voices?.filter { !it.isNetworkConnectionRequired && it.locale.language.startsWith("en") }
-                ?.sortedBy { it.name }
-                ?: tts?.voices?.sortedBy { it.name }?.toList() ?: emptyList()
+            context.packageManager.getPackageInfo(googleEngine, 0)
+            googleEngine
+        } catch (_: Exception) {
+            null // Fallback to system default
+        }
+    }
+
+    fun initTts(enginePackage: String? = null, onInitComplete: ((Boolean) -> Unit)? = null) {
+        val targetEngine = enginePackage ?: currentEnginePackage ?: resolveBestEnginePackage()
+        currentEnginePackage = targetEngine
+
+        val listener = TextToSpeech.OnInitListener { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                applyAudioAttributes()
+
+                val langResult = tts?.setLanguage(Locale.US)
+                if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    tts?.setLanguage(Locale.getDefault())
+                }
+
+                // Auto-select the highest quality offline voice
+                autoSelectBestVoice()
+
+                tts?.setSpeechRate(speed)
+                tts?.setPitch(pitch)
+                setupProgressListener()
+                isInitialized = true
+                _isReady.value = true
+                Log.i(tag, "TTS initialized with engine=$currentEnginePackage, clarityMode=$speechClarityMode")
+                onInitComplete?.invoke(true)
+            } else {
+                Log.e(tag, "Failed to initialize TTS engine ($targetEngine), status=$status")
+                // If specific engine failed, retry once with system default
+                if (targetEngine != null) {
+                    Log.w(tag, "Retrying with default system engine fallback...")
+                    currentEnginePackage = null
+                    initTts(null, onInitComplete)
+                } else {
+                    _isReady.value = false
+                    onInitComplete?.invoke(false)
+                }
+            }
+        }
+
+        tts = if (targetEngine != null) {
+            TextToSpeech(context.applicationContext, listener, targetEngine)
+        } else {
+            TextToSpeech(context.applicationContext, listener)
+        }
+    }
+
+    private fun applyAudioAttributes() {
+        val usage = if (speechClarityMode) {
+            AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY
+        } else {
+            AudioAttributes.USAGE_MEDIA
+        }
+        val audioAttributes = AudioAttributes.Builder()
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .setUsage(usage)
+            .build()
+        tts?.setAudioAttributes(audioAttributes)
+    }
+
+    private fun autoSelectBestVoice() {
+        try {
+            val bestVoice = getAvailableVoices().firstOrNull()
+            if (bestVoice != null) {
+                tts?.voice = bestVoice
+                Log.i(tag, "Auto-selected high-clarity voice: ${bestVoice.name} (quality=${bestVoice.quality})")
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Voice auto-selection fallback", e)
+        }
+    }
+
+    fun getAvailableVoices(): List<Voice> {
+        return try {
+            tts?.voices?.filter { voice ->
+                // Must not require network connection
+                !voice.isNetworkConnectionRequired &&
+                // Must not be missing local installation files
+                !(voice.features?.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) ?: false) &&
+                // Filter for English (or primary book language)
+                voice.locale.language.startsWith("en")
+            }?.sortedWith(
+                compareByDescending<Voice> { voice ->
+                    var score = voice.quality
+                    val nameLower = voice.name.lowercase()
+                    if (nameLower.contains("neural")) score += 100
+                    if (nameLower.contains("local")) score += 50
+                    if (nameLower.contains("high")) score += 30
+                    if (nameLower.contains("compact") || nameLower.contains("low")) score -= 100
+                    score
+                }.thenBy { it.name }
+            ) ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }
@@ -56,33 +179,42 @@ class SystemTtsEngine(private val context: Context) {
         }
     }
 
-    var onSentenceStartListener: ((Int) -> Unit)? = null
-    var onSentenceDoneListener: ((Int) -> Unit)? = null
-    var onChunkStartListener: ((String) -> Unit)? = null
-    var onChunkDoneListener: ((String) -> Unit)? = null
-    var onRangeStartListener: ((utteranceId: String, start: Int, end: Int) -> Unit)? = null
-    var onPlaybackCompletedListener: (() -> Unit)? = null
-
-    init {
-        initTts()
+    fun getAvailableEngines(): List<Pair<String, String>> {
+        return try {
+            tts?.engines?.map { it.name to it.label } ?: emptyList()
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
-    private fun initTts() {
-        tts = TextToSpeech(context.applicationContext) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                val langResult = tts?.setLanguage(Locale.US)
-                if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    tts?.setLanguage(Locale.getDefault())
+    fun getCurrentEngineLabel(): String {
+        val currentPkg = currentEnginePackage ?: tts?.defaultEngine
+        val matched = tts?.engines?.firstOrNull { it.name == currentPkg }
+        return matched?.label ?: currentPkg ?: "System Default"
+    }
+
+    fun switchEngine(enginePackage: String, onComplete: ((Boolean) -> Unit)? = null) {
+        release()
+        initTts(enginePackage, onComplete)
+    }
+
+    fun openSystemTtsSettings(ctx: Context) {
+        try {
+            val intent = Intent("com.android.settings.TTS_SETTINGS").apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            ctx.startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
-                tts?.setSpeechRate(speed)
-                tts?.setPitch(pitch)
-                setupProgressListener()
-                isInitialized = true
-                _isReady.value = true
-                Log.i(tag, "System TTS initialized successfully.")
-            } else {
-                Log.e(tag, "Failed to initialize System TTS: status=$status")
-                _isReady.value = false
+                ctx.startActivity(intent)
+            } catch (_: Exception) {
+                val intent = Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                ctx.startActivity(intent)
             }
         }
     }

@@ -1,6 +1,10 @@
 package com.tts.reader.tts
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
+import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -21,6 +25,9 @@ class AudioStreamPipeline(
 ) {
     private val tag = "AudioStreamPipeline"
 
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
+
     private var sentences: List<String> = emptyList()
     private var speechChunks: List<SpeechChunk> = emptyList()
     private var activeSubChunk: SpeechChunk? = null
@@ -32,6 +39,8 @@ class AudioStreamPipeline(
 
     private val _activeSentenceIndex = MutableStateFlow(0)
     val activeSentenceIndex: StateFlow<Int> = _activeSentenceIndex
+
+    var onChapterCompletedListener: (() -> Unit)? = null
 
     var playbackSpeed: Float = 1.0f
         set(value) {
@@ -119,6 +128,8 @@ class AudioStreamPipeline(
             }
             if (isLast) {
                 _isPlaying.value = false
+                abandonAudioFocus()
+                onChapterCompletedListener?.invoke()
             }
         }
     }
@@ -185,10 +196,60 @@ class AudioStreamPipeline(
         activeSubChunk = null
     }
 
+    private fun requestAudioFocus(): Boolean {
+        if (audioManager == null) return true
+        val usage = if (systemTts.speechClarityMode) {
+            AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY
+        } else {
+            AudioAttributes.USAGE_MEDIA
+        }
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val playbackAttributes = AudioAttributes.Builder()
+                .setUsage(usage)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(playbackAttributes)
+                .setAcceptsDelayedFocusGain(true)
+                .setOnAudioFocusChangeListener { focusChange ->
+                    when (focusChange) {
+                        AudioManager.AUDIOFOCUS_LOSS -> pause()
+                        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pause()
+                    }
+                }
+                .build()
+            audioFocusRequest = request
+            audioManager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(
+                { focusChange ->
+                    when (focusChange) {
+                        AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pause()
+                    }
+                },
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN
+            ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        }
+    }
+
+    private fun abandonAudioFocus() {
+        if (audioManager == null) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+            audioFocusRequest = null
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(null)
+        }
+    }
+
     fun play() {
         if (sentences.isEmpty() || speechChunks.isEmpty()) return
         if (_isPlaying.value) return
 
+        requestAudioFocus()
         _isPlaying.value = true
         systemTts.speed = playbackSpeed
         systemTts.pitch = pitch
@@ -221,6 +282,7 @@ class AudioStreamPipeline(
 
     fun pause() {
         _isPlaying.value = false
+        abandonAudioFocus()
         systemTts.stop()
     }
 
@@ -245,6 +307,7 @@ class AudioStreamPipeline(
 
     fun release() {
         stop()
+        abandonAudioFocus()
         systemTts.release()
     }
 }
