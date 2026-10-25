@@ -3,7 +3,8 @@
 [![Android](https://img.shields.io/badge/Platform-Android%209.0%2B%20(API%2028%2B)-3DDC84?logo=android&logoColor=white)](#)
 [![Kotlin](https://img.shields.io/badge/Kotlin-1.9.24-7F52FF?logo=kotlin&logoColor=white)](#)
 [![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?logo=jetpackcompose&logoColor=white)](#)
-[![APK Size](https://img.shields.io/badge/APK%20Size-2.80%20MB-F59E0B)](#)
+[![APK Size](https://img.shields.io/badge/APK%20Size-2.69%20MB-F59E0B)](#)
+[![Version](https://img.shields.io/badge/Version-1.5.1-success)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A lightweight, 100% offline Text-to-Speech (TTS) novel reader for Android. Built natively with Jetpack Compose and Android's built-in `TextToSpeech` engine, TTS Local Reader delivers zero-gap paragraph streaming, vocal clarity enhancement, smart web novel scraping, and sleep timers with zero idle battery drain.
@@ -28,12 +29,13 @@ A lightweight, 100% offline Text-to-Speech (TTS) novel reader for Android. Built
 - Continuous synchronization of `PlaybackStateCompat` supporting Play, Pause, Previous, Next, and Stop.
 - Automatic service teardown and notification dismissal on swipe (`onTaskRemoved`).
 
-### Sleep & Loop Timer (Zero-Battery Deep Sleep Guarantee)
-- **Continuous**: Normal queue playback across chapters.
+### Default Safe Sleep Timer (N = 2 Chapters Default)
+- **Safe Default**: Initialized to **Play 2 Chapters Then Sleep** by default, preventing overnight battery drain and accidental runaway reading.
+- **Continuous**: Normal queue playback across chapters without auto-sleep.
 - **Loop Chapter Once**: Replays the current chapter a single time before sleeping.
 - **Play $N$ Chapters**: Seamlessly advances through $N$ chapters before triggering sleep.
-- **Dynamic Switching**: Change modes on the fly (e.g. switch to Loop on chapter 2 of 3 to loop that chapter once and stop).
-- **Deep Sleep Guarantee**: When sleep triggers, the app stops the audio pipeline, releases partial wake-locks, dismisses the notification, stops the foreground service, and abandons audio focus, allowing Android OS to enter low-power deep sleep.
+- **Automatic Countdown Reset**: Manually opening a novel chapter automatically resets the countdown so each reading session starts fresh.
+- **Zero-Battery Deep Sleep Guarantee**: When sleep triggers, the app stops the audio pipeline, releases partial wake-locks, dismisses the notification, stops the foreground service, and abandons audio focus, allowing Android OS to enter low-power deep sleep.
 
 ### Intelligent Text Sanitization
 - **Divider Detection**: Visual horizontal rules (`-------`, `***`, `===`, `~*~*~`) are rendered as glowing amber glyphs (`✦`) in the reader UI and completely silenced during audio playback.
@@ -41,13 +43,13 @@ A lightweight, 100% offline Text-to-Speech (TTS) novel reader for Android. Built
 - **Web Artifact Cleaning**: Unescapes residual HTML entities, standardizes full-width Asian punctuation, cleans LitRPG system brackets (`[System: ...]`), converts dialogue em-dashes and tildes into natural speech pauses, and strips action asterisks/underscores (`*sigh*` &rarr; `sigh`).
 
 ### Novel-First Architecture & Obsidian Bookshelf
+- **Zero Data Loss Guarantee**: Non-destructive Room schema migrations (`MIGRATION_1_2`, `MIGRATION_2_3`, `MIGRATION_1_3`) with permanent removal of destructive migrations.
+- **Self-Healing Bookshelf Reconciler (`NovelReconciler.kt`)**: Background engine automatically scans for legacy or unclassified chapters, groups them into parent novels, and synchronizes chapter counts so reading data is never lost or orphaned.
 - **Canonical Mirror Normalization (`NovelClassifier.kt`)**: Automatically identifies novel identity across mirror sites (Ranobes, Light Novel Pub, FreeWebNovel, etc.) by extracting canonical keys (e.g., `"shadow-slave"`), ensuring chapters from different sources group into the exact same novel.
-- **First-Class Novel Entity**: Backed by a dedicated `NovelEntity` Room table with last-read chapter title, last-read sentence index, total chapter tracking, and chronological ordering via float sequence parsing (`chapterNumber: Float`).
 - **Obsidian Bookshelf Sheet (`NovelBookshelfSheet`)**:
   - *Level 1 (Bookshelf)*: Shows all saved novels with total chapter counts, last read chapter, 1-tap "Resume Reading", and "Chapters" drill-down.
   - *Level 2 (Chapters Directory)*: Chronological chapter listing with active playing indicator, 1-tap playback, chapter URL copying, and single-chapter deletion.
-  - Safe deletion dialogs for individual chapters, entire novels, and full storage clearing.
-- **Lookahead Prefetching**: Multi-step ($N+1, N+2$) background lookahead prefetching with automatic purge of corrupted comments placeholders.
+- **Lookahead Prefetching & Live Cache Badge**: Multi-step ($N+1, N+2$) background lookahead prefetching with immediate parent novel linking and a real-time chapter cache counter badge on the TopAppBar Bookshelf icon.
 - In-app Cloudflare solver sheet with synchronized WebView session cookies.
 
 ### Obsidian Amber Reading UI
@@ -63,11 +65,11 @@ Pre-built APKs are located in the project build outputs:
 
 | Variant | File Location | Size | Description |
 | :--- | :--- | :--- | :--- |
-| **Release (Recommended)** | `app/build/outputs/apk/release/app-release.apk` | **2.80 MB** | R8 tree-shaken and resource-shrunk production build. Signed with debug keys for immediate sideloading. |
+| **Release (Recommended)** | `app/build/outputs/apk/release/app-release.apk` | **2.69 MB** | R8 tree-shaken and resource-shrunk production build. Signed with debug keys for immediate sideloading. |
 | **Debug** | `app/build/outputs/apk/debug/app-debug.apk` | 54.85 MB | Full unminified debug APK with detailed symbol tables and developer logging. |
 
 > [!TIP]
-> For testing on a physical device, transfer **`app-release.apk`** (2.80 MB) to your phone or install via ADB:
+> For testing on a physical device, transfer **`app-release.apk`** (2.69 MB) to your phone or install via ADB:
 > ```powershell
 > adb install -r app\build\outputs\apk\release\app-release.apk
 > ```

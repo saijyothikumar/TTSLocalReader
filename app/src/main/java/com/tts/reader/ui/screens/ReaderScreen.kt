@@ -102,12 +102,32 @@ fun ReaderScreen(viewModel: ReaderViewModel) {
                     titleContentColor = TextPrimary
                 ),
                 navigationIcon = {
-                    IconButton(onClick = { novelBookshelfVisible = true }) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.MenuBook,
-                            contentDescription = "Novel Bookshelf",
-                            tint = AmberPrimary
-                        )
+                    IconButton(onClick = {
+                        viewModel.onOpenBookshelf()
+                        novelBookshelfVisible = true
+                    }) {
+                        BadgedBox(
+                            badge = {
+                                if (uiState.cachedChapterCount > 0) {
+                                    Badge(
+                                        containerColor = AmberPrimary,
+                                        contentColor = ObsidianBackground
+                                    ) {
+                                        Text(
+                                            text = "${uiState.cachedChapterCount}",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                                contentDescription = "Novel Bookshelf",
+                                tint = AmberPrimary
+                            )
+                        }
                     }
                 },
                 title = {

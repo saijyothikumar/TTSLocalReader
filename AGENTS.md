@@ -89,5 +89,24 @@ A lightweight, offline-first Text-to-Speech (TTS) application targeting Android 
     5. Replaced redundant dual dialogs (`SavedChaptersDialog` and `ChapterLibrarySheet`) with a unified Obsidian Amber `NovelBookshelfSheet`:
        - *Level 1 (Bookshelf)*: Shows all saved novels with total chapter counts, last read chapter, 1-tap "Resume Reading", "Chapters" drill-down, and novel deletion protected by confirmation dialogs.
        - *Level 2 (Chapters Directory)*: Shows all chapters of the selected novel sorted chronologically, active playback indicator, 1-tap play, chapter URL copy, and single chapter deletion.
-       - Clean TopAppBar: Replaced redundant folder button with direct Bookshelf menu icon.
+       - Clean TopAppBar: Replaced redundant folder button with direct Bookshelf menu icon with real-time cache badge.
+- **Non-Destructive Room Migrations & Zero Data Loss Guarantee**:
+  - *Root Cause & Prior Defect*: When bumping Room database version from 1 to 2, `fallbackToDestructiveMigration()` was configured without registering explicit `Migration` objects. When users upgraded APKs, Room silently dropped all existing SQLite tables (`DROP TABLE chapters`), wiping saved libraries and reading history.
+  - *Architecture & Verified Pattern*:
+    1. Removed `.fallbackToDestructiveMigration()` permanently.
+    2. Added explicit `MIGRATION_1_2`, `MIGRATION_2_3`, and `MIGRATION_1_3` handling `CREATE TABLE IF NOT EXISTS novels`, `ALTER TABLE chapters ADD COLUMN novelId ...`, `ALTER TABLE chapters ADD COLUMN chapterNumber ...`, and index creation.
+    3. Room database version bumped to 3 in `AppDatabase.kt`.
+- **Self-Healing Bookshelf Reconciler (`NovelReconciler`)**:
+  - Detects legacy or unclassified chapters with empty `novelId`, auto-computes canonical IDs via `NovelClassifier`, backfills parent `NovelEntity` records, and synchronizes `totalChapters` counts.
+  - Executed on background thread during app startup (`ReaderViewModel.init`) and re-triggered on Bookshelf sheet open (`onOpenBookshelf`).
+  - Decoupled into `NovelReconciler.kt` and fully unit-tested in `NovelReconcilerTest.kt`.
+- **Default Safe Sleep Mode (N = 2 Chapters Default)**:
+  - Replaced infinite continuous playback with `SleepMode.PlayNChapters(totalChapters = 2, remainingChapters = 2)` as the application default state.
+  - Prevents uncontrolled playback and battery drain when falling asleep reading novels.
+  - Automatically resets the 2-chapter countdown upon manual chapter load or when waking from sleep.
+- **Lookahead Prefetching Hardening & Real-Time Cache Badge**:
+  - Prefetched chapters ($N+1, N+2$) immediately establish and link parent `NovelEntity` records and update `NovelEntity.totalChapters` in the database.
+  - `findNavigationLink` resolves navigation links inside container elements (`#next a`, `div#next a`, `li.next a`) and attributes (`data-url`, `data-href`).
+  - `isValidChapterUrl` supports subdomain symmetry (e.g. `m.ranobes.net` to `ranobes.net`) without false cross-domain rejections.
+  - TopAppBar MenuBook navigation icon features a real-time `BadgedBox` badge displaying `uiState.cachedChapterCount` so lookahead progress is visible immediately.
 

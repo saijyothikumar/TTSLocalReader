@@ -39,4 +39,7 @@ interface NovelDao {
 
     @Query("DELETE FROM novels")
     suspend fun clearAllNovels()
+
+    @Query("SELECT * FROM novels")
+    suspend fun getAllNovelsDirect(): List<NovelEntity>
 }

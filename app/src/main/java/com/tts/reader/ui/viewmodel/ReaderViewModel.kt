@@ -7,6 +7,7 @@ import com.tts.reader.TTSApp
 import com.tts.reader.data.local.AppDatabase
 import com.tts.reader.data.local.ChapterEntity
 import com.tts.reader.data.local.NovelEntity
+import com.tts.reader.data.local.NovelReconciler
 import com.tts.reader.data.scraper.CaptchaChallengeException
 import com.tts.reader.data.scraper.NovelClassifier
 import com.tts.reader.data.scraper.NovelScraper
@@ -52,7 +53,7 @@ data class ReaderUiState(
     val errorMessage: String? = null,
     val infoMessage: String? = null,
     val captchaChallengeUrl: String? = null,
-    val sleepMode: SleepMode = SleepMode.Off
+    val sleepMode: SleepMode = SleepMode.PlayNChapters(totalChapters = 2, remainingChapters = 2)
 )
 
 class ReaderViewModel(application: Application) : AndroidViewModel(application) {
@@ -112,6 +113,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             delay(500) // Allow TextToSpeech engine time to complete initialization
             loadInstalledVoices()
+        }
+
+        // Reconcile and auto-heal any unclassified or orphaned chapters from legacy schemas
+        viewModelScope.launch(Dispatchers.IO) {
+            reconcileOrphanedChapters()
         }
     }
 
@@ -208,8 +214,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun enterSleep() {
         audioPipeline.stop()
         PlaybackService.stopPlayback(getApplication())
+        val defaultN = (_uiState.value.sleepMode as? SleepMode.PlayNChapters)?.totalChapters ?: 2
         _uiState.value = _uiState.value.copy(
-            sleepMode = SleepMode.Off,
+            sleepMode = SleepMode.PlayNChapters(totalChapters = defaultN, remainingChapters = defaultN),
             infoMessage = "Sleep mode activated. Playback stopped."
         )
         scheduleInfoMessageDismiss()
@@ -302,6 +309,13 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             )
             scheduleInfoMessageDismiss()
             return
+        }
+
+        if (!autoPlay && _uiState.value.sleepMode is SleepMode.PlayNChapters) {
+            val total = (_uiState.value.sleepMode as SleepMode.PlayNChapters).totalChapters
+            _uiState.value = _uiState.value.copy(
+                sleepMode = SleepMode.PlayNChapters(totalChapters = total, remainingChapters = total)
+            )
         }
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -541,6 +555,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
 
+        val activeNovelId = _uiState.value.currentNovelId.takeIf { it.isNotBlank() }
+        val activeNovelTitle = _uiState.value.novelTitle.takeIf { it.isNotBlank() }
+
         viewModelScope.launch(Dispatchers.IO) {
             // 1. Prefetch Chapter N+1 with a polite 1-second delay so server sees natural reading cadence
             delay(1000)
@@ -551,17 +568,43 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             if (next1 == null) {
-                val res1 = scraper.scrape(firstNextUrl, referer = currentUrl).getOrNull()
+                val res1 = scraper.scrape(
+                    firstNextUrl,
+                    referer = currentUrl,
+                    activeNovelId = activeNovelId,
+                    activeNovelTitle = activeNovelTitle
+                ).getOrNull()
                 if (res1 != null) {
+                    val novelId = res1.novelId.ifBlank {
+                        activeNovelId ?: NovelClassifier.toCanonicalNovelId(res1.novelTitle)
+                    }
                     val entity1 = ChapterEntity(
                         url = firstNextUrl,
+                        novelId = novelId,
                         novelTitle = res1.novelTitle,
                         chapterTitle = res1.chapterTitle,
+                        chapterNumber = res1.chapterNumber,
                         paragraphs = res1.paragraphs,
                         nextChapterUrl = res1.nextChapterUrl,
                         prevChapterUrl = res1.prevChapterUrl ?: currentUrl
                     )
                     chapterDao.insertChapter(entity1)
+                    if (novelId.isNotBlank()) {
+                        val existing = novelDao.getNovelById(novelId)
+                        if (existing == null) {
+                            val cleanTitle = NovelClassifier.cleanNovelTitle(res1.novelTitle).ifBlank { activeNovelTitle ?: "Saved Novel" }
+                            val newNovel = NovelEntity(
+                                id = novelId,
+                                title = cleanTitle,
+                                lastReadUrl = firstNextUrl,
+                                lastReadChapterTitle = res1.chapterTitle,
+                                totalChapters = 1
+                            )
+                            novelDao.insertOrUpdateNovel(newNovel)
+                        }
+                        val count = chapterDao.getChapterCountForNovel(novelId)
+                        novelDao.updateTotalChapters(novelId, count)
+                    }
                     next1 = entity1
                 }
             }
@@ -577,16 +620,42 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 }
 
                 if (next2 == null) {
-                    scraper.scrape(nextNextUrl, referer = firstNextUrl).getOrNull()?.let { res2 ->
+                    scraper.scrape(
+                        nextNextUrl,
+                        referer = firstNextUrl,
+                        activeNovelId = activeNovelId,
+                        activeNovelTitle = activeNovelTitle
+                    ).getOrNull()?.let { res2 ->
+                        val novelId = res2.novelId.ifBlank {
+                            activeNovelId ?: NovelClassifier.toCanonicalNovelId(res2.novelTitle)
+                        }
                         val entity2 = ChapterEntity(
                             url = nextNextUrl,
+                            novelId = novelId,
                             novelTitle = res2.novelTitle,
                             chapterTitle = res2.chapterTitle,
+                            chapterNumber = res2.chapterNumber,
                             paragraphs = res2.paragraphs,
                             nextChapterUrl = res2.nextChapterUrl,
                             prevChapterUrl = res2.prevChapterUrl ?: firstNextUrl
                         )
                         chapterDao.insertChapter(entity2)
+                        if (novelId.isNotBlank()) {
+                            val existing = novelDao.getNovelById(novelId)
+                            if (existing == null) {
+                                val cleanTitle = NovelClassifier.cleanNovelTitle(res2.novelTitle).ifBlank { activeNovelTitle ?: "Saved Novel" }
+                                val newNovel = NovelEntity(
+                                    id = novelId,
+                                    title = cleanTitle,
+                                    lastReadUrl = nextNextUrl,
+                                    lastReadChapterTitle = res2.chapterTitle,
+                                    totalChapters = 1
+                                )
+                                novelDao.insertOrUpdateNovel(newNovel)
+                            }
+                            val count = chapterDao.getChapterCountForNovel(novelId)
+                            novelDao.updateTotalChapters(novelId, count)
+                        }
                     }
                 }
             }
@@ -770,5 +839,22 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
         }
+    }
+
+    fun onOpenBookshelf() {
+        viewModelScope.launch(Dispatchers.IO) {
+            reconcileOrphanedChapters()
+        }
+    }
+
+    /**
+     * Idempotent self-healing engine: scans for chapters with missing novelId
+     * or missing parent NovelEntity records, classifies them, and backfills
+     * parent novels so user data is never lost or invisible on the Bookshelf.
+     */
+    suspend fun reconcileOrphanedChapters() {
+        try {
+            NovelReconciler.reconcile(chapterDao, novelDao)
+        } catch (_: Exception) {}
     }
 }

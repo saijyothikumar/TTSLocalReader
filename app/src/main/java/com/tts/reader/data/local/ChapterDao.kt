@@ -44,4 +44,13 @@ interface ChapterDao {
 
     @Query("SELECT COUNT(*) FROM chapters")
     suspend fun getCachedChapterCount(): Int
+
+    @Query("SELECT * FROM chapters WHERE novelId = '' OR novelId IS NULL")
+    suspend fun getOrphanedChapters(): List<ChapterEntity>
+
+    @Query("SELECT * FROM chapters")
+    suspend fun getAllChaptersDirect(): List<ChapterEntity>
+
+    @Query("UPDATE chapters SET novelId = :novelId, chapterNumber = :chapterNumber WHERE url = :url")
+    suspend fun updateChapterClassification(url: String, novelId: String, chapterNumber: Float)
 }

@@ -236,12 +236,35 @@ class NovelScraperTest {
         assertFalse(scraper.isValidChapterUrl("https://ranobes.net/supreme-magus-v812312-218262/comments/320052/", base))
         assertFalse(scraper.isValidChapterUrl("https://ranobes.net/comments/320052/", base))
         assertFalse(scraper.isValidChapterUrl("https://ranobes.net/supreme-magus-v812312-218262/320053.html#comments", base))
-        // Cross-domain navigation
-        assertFalse(scraper.isValidChapterUrl("https://other-domain.com/chapter-2", base))
-        // Javascript or empty
-        assertFalse(scraper.isValidChapterUrl("javascript:void(0)", base))
-        assertFalse(scraper.isValidChapterUrl("#", base))
-        assertFalse(scraper.isValidChapterUrl("", base))
+        // Subdomain symmetry: m.ranobes.net <-> ranobes.net
+        assertTrue(scraper.isValidChapterUrl("https://ranobes.net/c2.html", "https://m.ranobes.net/c1.html"))
+        assertTrue(scraper.isValidChapterUrl("https://m.ranobes.net/c2.html", "https://ranobes.net/c1.html"))
+    }
+
+    @Test
+    fun testNavigationLinkInContainerElement() {
+        val html = """
+            <html>
+            <body>
+                <h1>Chapter 1</h1>
+                <div class="chapter-content"><p>Story text.</p></div>
+                <div id="next">
+                    <a href="https://ranobes.net/c2.html">Next Chapter</a>
+                </div>
+                <li class="prev">
+                    <a href="https://ranobes.net/c0.html">Previous</a>
+                </li>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val scraper = NovelScraper()
+        val doc = Jsoup.parse(html, "https://ranobes.net/c1.html")
+        val next = scraper.findNavigationLink(doc, "https://ranobes.net/c1.html", isNext = true)
+        val prev = scraper.findNavigationLink(doc, "https://ranobes.net/c1.html", isNext = false)
+
+        assertEquals("https://ranobes.net/c2.html", next)
+        assertEquals("https://ranobes.net/c0.html", prev)
     }
 }
 

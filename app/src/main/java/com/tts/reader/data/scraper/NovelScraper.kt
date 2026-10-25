@@ -168,7 +168,11 @@ class NovelScraper {
 
         if (baseHost != null) {
             val cleanHost = host.removePrefix("www.")
-            if (cleanHost != baseHost && !cleanHost.endsWith(".$baseHost")) {
+            val cleanBaseHost = baseHost.removePrefix("www.")
+            val isSameDomain = cleanHost == cleanBaseHost ||
+                cleanHost.endsWith(".$cleanBaseHost") ||
+                cleanBaseHost.endsWith(".$cleanHost")
+            if (!isSameDomain) {
                 return false
             }
         }
@@ -445,25 +449,45 @@ class NovelScraper {
         return ""
     }
 
+    private fun extractElementUrl(element: org.jsoup.nodes.Element?, baseUrl: String): String? {
+        if (element == null) return null
+        var href = element.absUrl("href").ifBlank { element.absUrl("data-url") }.ifBlank { element.absUrl("data-href") }
+        if (href.isBlank()) {
+            val childA = element.selectFirst("a[href]") ?: element.selectFirst("a[data-url]")
+            if (childA != null) {
+                href = childA.absUrl("href").ifBlank { childA.absUrl("data-url") }
+            }
+        }
+        if (href.isBlank()) {
+            val rel = element.attr("href").ifBlank { element.attr("data-url") }
+            if (rel.isNotBlank() && !rel.startsWith("#") && !rel.startsWith("javascript:")) {
+                href = try {
+                    java.net.URI(baseUrl).resolve(rel).toString()
+                } catch (_: Exception) { "" }
+            }
+        }
+        return href.takeIf { it.isNotBlank() }
+    }
+
     fun findNavigationLink(doc: Document, baseUrl: String, isNext: Boolean): String? {
         val baseHost = try { java.net.URI(baseUrl).host?.lowercase()?.removePrefix("www.") } catch (_: Exception) { null }
         val novelPrefix = extractNovelPathPrefix(baseUrl)
 
         // 1. Check HTML head link elements first
         val headLinkRel = if (isNext) "next" else "prev"
-        val headLink = doc.selectFirst("link[rel=$headLinkRel]")?.absUrl("href")
+        val headLink = extractElementUrl(doc.selectFirst("link[rel=$headLinkRel]"), baseUrl)
         if (isValidChapterUrl(headLink, baseUrl, baseHost)) {
             return headLink
         }
 
         // 2. Check site-specific standard button IDs (Ranobes uses #next / #prev)
         val buttonIds = if (isNext) {
-            listOf("#next", "#next_url", "#nextChapter", "#next_chapter", "#next-chapter", "#next_page", "#btn-next")
+            listOf("#next", "#next_url", "#nextChapter", "#next_chapter", "#next-chapter", "#next_page", "#btn-next", "a#next")
         } else {
-            listOf("#prev", "#prev_url", "#prevChapter", "#prev_chapter", "#prev-chapter", "#prev_page", "#btn-prev")
+            listOf("#prev", "#prev_url", "#prevChapter", "#prev_chapter", "#prev-chapter", "#prev_page", "#btn-prev", "a#prev")
         }
         for (id in buttonIds) {
-            val href = doc.selectFirst(id)?.absUrl("href")
+            val href = extractElementUrl(doc.selectFirst(id), baseUrl)
             if (isValidChapterUrl(href, baseUrl, baseHost)) {
                 return href
             }
@@ -471,12 +495,12 @@ class NovelScraper {
 
         // 3. Check class-specific selectors
         val classSelectors = if (isNext) {
-            listOf("a.next", "a.ch-next-btn", "a.nav-next", "a.next_page", "a[rel=next]", "a[title='Right button']", "a[title*=Next]")
+            listOf("a.next", ".nav-next a", ".next a", "a.ch-next-btn", "a.nav-next", "a.next_page", "a[rel=next]", "a[title*='Next' i]", "a[title*='Right button' i]")
         } else {
-            listOf("a.prev", "a.ch-prev-btn", "a.nav-prev", "a.prev_page", "a[rel=prev]", "a[title='Left button']", "a[title*=Previous]", "a[title*=Prev]")
+            listOf("a.prev", ".nav-prev a", ".prev a", "a.ch-prev-btn", "a.nav-prev", "a.prev_page", "a[rel=prev]", "a[title*='Prev' i]", "a[title*='Left button' i]")
         }
         for (sel in classSelectors) {
-            val href = doc.selectFirst(sel)?.absUrl("href")
+            val href = extractElementUrl(doc.selectFirst(sel), baseUrl)
             if (isValidChapterUrl(href, baseUrl, baseHost)) {
                 return href
             }
